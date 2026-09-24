@@ -1,0 +1,26 @@
+{
+  "name": "candiddulhan-rsvp",
+  "version": "0.1.0",
+  "description": "RSVP, guest ID collection and call tracking for Candid Dulhan wedding clients",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch src/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/candiddulhan-boop/candiddulhan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/candiddulhan-boop/candiddulhan/issues"
+  },
+  "homepage": "https://github.com/candiddulhan-boop/candiddulhan#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.4.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
