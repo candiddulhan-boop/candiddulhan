@@ -22,6 +22,28 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 | `/c/<client-token>` | Your client | Read-only dashboard with stats, guests, latest updates feed, IDs, calls and recordings, CSV. Optional PIN. |
 | `/api/recordings` | Android phone | Upload call recordings (auto-matched to guests by phone number) |
 
+### Try it (demo data included)
+
+**Option 1: GitHub Codespaces (in your browser, nothing to install)**
+1. On GitHub, open this repo and switch to the branch you want to test.
+2. Click **Code → Codespaces → Create codespace on this branch**.
+3. Wait about 2 minutes. It installs everything, loads a demo wedding and starts the app, and a browser tab opens. If it doesn't open, go to the **Ports** tab and click the globe icon next to port 3000.
+4. Log in with one of the demo accounts below.
+
+To open guest or client links on another phone, right-click port 3000 in the **Ports** tab and set **Port visibility → Public** (only while testing).
+
+**Option 2: on your computer:** install [Node.js 22 LTS](https://nodejs.org), then:
+```bash
+git clone https://github.com/candiddulhan-boop/candiddulhan.git
+cd candiddulhan && git checkout claude/wedding-rsvp-guest-management-1yg091
+npm install
+npm run seed        # demo wedding with 24 guests, 3 team members, calls and follow-ups
+npm start           # open http://localhost:3000
+```
+
+**Demo logins** (password `demo123`): `priya@demo.in` (admin), `neha@demo.in` and `ravi@demo.in` (callers).
+Owner login: leave "Email or phone" empty and use `ADMIN_PASSWORD` (`admin` if it isn't set).
+
 ### Run it
 
 Requires Node.js 22.13 or newer. There are no native dependencies, because the database is SQLite built into Node.

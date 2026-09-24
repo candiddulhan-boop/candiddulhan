@@ -1,0 +1,9 @@
+{
+  "name": "Candid Dulhan RSVP",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "postCreateCommand": "npm install && npm run seed",
+  "postAttachCommand": "npm start",
+  "forwardPorts": [3000],
+  "portsAttributes": { "3000": { "label": "RSVP app", "onAutoForward": "openBrowser" } },
+  "containerEnv": { "ADMIN_PASSWORD": "admin", "API_KEY": "demo-key" }
+}

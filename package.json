@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning src/server.js",
-    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch src/server.js"
+    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch src/server.js",
+    "seed": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/seed.js"
   },
   "repository": {
     "type": "git",

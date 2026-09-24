@@ -49,7 +49,7 @@ function removeUpload(kind, file) {
   if (file) fs.rm(path.join(uploadDir(kind), path.basename(file)), { force: true }, () => {});
 }
 
-const baseUrl = (req) => config.baseUrl || `${req.protocol}://${req.get('host')}`;
+const baseUrl = (req) => config.baseUrl || `${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}`;
 const inviteUrl = (req, g) => `${baseUrl(req)}/i/${g.token}`;
 const clientUrl = (req, e) => `${baseUrl(req)}/c/${e.client_token}`;
 
