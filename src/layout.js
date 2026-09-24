@@ -16,7 +16,7 @@ function layout({ title, user, body, nav = true, flash }) {
 ${nav ? html`<header class="topbar">
   <a class="brand" href="${user?.role === 'caller' ? '/caller' : '/admin'}">Candid Dulhan <span>RSVP</span></a>
   ${user ? html`<nav>
-    ${user.role === 'admin' ? html`<a href="/admin">Weddings</a>` : ''}
+    ${user.role === 'admin' ? html`<a href="/admin">Weddings</a><a href="/admin/team">Team</a>` : ''}
     <a href="/caller">Caller</a>
     <form method="post" action="/logout"><button class="link">Log out</button></form>
   </nav>` : ''}

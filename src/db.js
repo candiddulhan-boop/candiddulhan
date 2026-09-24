@@ -75,6 +75,40 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS calls_event ON calls(event_id);
 CREATE INDEX IF NOT EXISTS calls_guest ON calls(guest_id);
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  login TEXT NOT NULL UNIQUE COLLATE NOCASE,   -- email or phone
+  role TEXT NOT NULL DEFAULT 'caller',          -- admin | caller
+  pass_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Timeline of everything that happened to a guest (CRM history)
+CREATE TABLE IF NOT EXISTS activities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+  guest_id INTEGER REFERENCES guests(id) ON DELETE CASCADE,
+  actor TEXT,                     -- team member name, or 'Guest'
+  kind TEXT NOT NULL,             -- invite | rsvp | id | call | note | assign | import
+  detail TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS activities_guest ON activities(guest_id);
+CREATE INDEX IF NOT EXISTS activities_event ON activities(event_id, created_at);
 `);
+
+// Additive migrations for databases created by earlier versions.
+function addColumn(table, column, type) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+addColumn('guests', 'assigned_to', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+addColumn('guests', 'follow_up_at', 'TEXT');
+addColumn('calls', 'user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+addColumn('events', 'client_pin', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS guests_assigned ON guests(assigned_to, follow_up_at)');
 
 module.exports = db;

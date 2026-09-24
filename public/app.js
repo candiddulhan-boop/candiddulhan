@@ -37,3 +37,34 @@ document.querySelectorAll('[data-call]').forEach((a) => a.addEventListener('clic
   };
   setTimeout(() => document.addEventListener('visibilitychange', onBack), 500);
 }));
+
+// Bulk selection on the admin guest table.
+const selAll = document.querySelector('[data-selall]');
+const selCount = () => {
+  const n = document.querySelectorAll('[data-sel]:checked').length;
+  document.querySelectorAll('[data-selcount]').forEach((el) => (el.textContent = n));
+};
+selAll?.addEventListener('change', () => {
+  document.querySelectorAll('[data-sel]').forEach((c) => (c.checked = selAll.checked));
+  selCount();
+});
+document.addEventListener('change', (ev) => { if (ev.target.matches('[data-sel]')) selCount(); });
+
+// Confirm for individual submit buttons.
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-confirm-click]');
+  if (b && !confirm(b.dataset.confirmClick)) ev.preventDefault();
+});
+
+// Follow-up quick picks (local time).
+document.addEventListener('click', (ev) => {
+  const chip = ev.target.closest('[data-in]');
+  const input = chip && chip.closest('form')?.querySelector('[data-followup]');
+  if (!input) return;
+  const d = new Date();
+  if (chip.dataset.in === '2h') d.setHours(d.getHours() + 2);
+  else if (chip.dataset.in === 'tomorrow') { d.setDate(d.getDate() + 1); d.setHours(11, 0, 0, 0); }
+  else if (chip.dataset.in === '2d') { d.setDate(d.getDate() + 2); d.setHours(11, 0, 0, 0); }
+  const pad = (n) => String(n).padStart(2, '0');
+  input.value = chip.dataset.in ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
+});

@@ -70,7 +70,8 @@ const fmtDate = (d) => {
   if (isNaN(dt)) return d;
   return d.length <= 10
     ? dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-    : dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+    : dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata',
+      ...(dt.getFullYear() !== new Date().getFullYear() && { year: 'numeric' }) });
 };
 
 const fmtDuration = (s) => (s == null || s === '' ? '' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`);

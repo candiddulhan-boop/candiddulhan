@@ -3,6 +3,7 @@ const express = require('express');
 const db = require('../db');
 const layout = require('../layout');
 const { html, maskId, fmtDate } = require('../util');
+const { sign, safeEqual } = require('../auth');
 const S = require('../shared');
 
 const r = express.Router({ mergeParams: true });
@@ -14,20 +15,50 @@ r.use((req, res, next) => {
   next();
 });
 
+// Optional PIN: once entered, remembered on this device with a signed cookie.
+const pinCookie = (e) => `cd_client_${e.id}`;
+const pinValue = (e) => sign(`${e.client_token}:${e.client_pin}`);
+const pinPage = (e, error) => layout({ title: e.title, nav: false, body: html`
+  <form method="post" class="form card login">
+    <p class="eyebrow">Guest dashboard</p><h1 class="couple">${e.title}</h1>
+    ${error ? html`<div class="flash warn">${error}</div>` : ''}
+    <label>PIN<input name="pin" inputmode="numeric" autocomplete="off" autofocus required></label>
+    <button class="primary big">Open dashboard</button>
+  </form>` });
+
+r.post('/', (req, res) => {
+  const e = req.event;
+  if (!e.client_pin || !safeEqual(String(req.body.pin || '').trim(), e.client_pin)) return res.status(401).send(pinPage(e, 'Wrong PIN'));
+  res.setHeader('Set-Cookie', `${pinCookie(e)}=${pinValue(e)}; Path=/c/${e.client_token}; HttpOnly; SameSite=Lax; Max-Age=${90 * 86400}`);
+  res.redirect(`/c/${e.client_token}`);
+});
+
+r.use((req, res, next) => {
+  const e = req.event;
+  if (!e.client_pin) return next();
+  const got = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === pinCookie(e))?.[1];
+  if (got && safeEqual(got, pinValue(e))) return next();
+  res.status(401).send(pinPage(e));
+});
+
 const guestOf = (req) => db.prepare('SELECT * FROM guests WHERE id = ? AND event_id = ?').get(req.params.id, req.event.id);
 
 r.get('/', (req, res) => {
   const e = req.event, base = `/c/${e.client_token}`;
   const filter = { status: req.query.status, side: req.query.side, q: req.query.q };
   const guests = S.listGuests(e.id, filter);
-  const tab = req.query.tab === 'calls' ? 'calls' : 'guests';
+  const tab = ['calls', 'activity'].includes(req.query.tab) ? req.query.tab : 'guests';
+  // Clients see guest-facing activity only (not the team's internal notes or assignments).
+  const activity = tab === 'activity' ? db.prepare(`SELECT a.*, g.name guest_name FROM activities a JOIN guests g ON g.id = a.guest_id
+    WHERE a.event_id = ? AND a.kind IN ('rsvp', 'id', 'invite') ORDER BY a.created_at DESC, a.id DESC LIMIT 200`).all(e.id) : [];
   res.send(layout({ title: e.title, nav: false, body: html`
     <div class="head"><div><p class="eyebrow">Guest dashboard</p><h1 class="couple">${e.title}</h1>
       <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p></div>
       <div class="actions"><a class="btn" href="${base}/export.csv">Download guest list (CSV)</a></div></div>
     ${S.statCards(S.stats(e.id))}
-    <nav class="tabs"><a class="${tab === 'guests' ? 'on' : ''}" href="${base}">Guests</a><a class="${tab === 'calls' ? 'on' : ''}" href="${base}?tab=calls">Calls &amp; recordings</a></nav>
-    ${tab === 'calls' ? S.callsTable(S.eventCalls(e.id), (c) => `${base}/calls/${c.id}/recording`) : html`
+    <nav class="tabs"><a class="${tab === 'guests' ? 'on' : ''}" href="${base}">Guests</a><a class="${tab === 'activity' ? 'on' : ''}" href="${base}?tab=activity">Latest updates</a><a class="${tab === 'calls' ? 'on' : ''}" href="${base}?tab=calls">Calls &amp; recordings</a></nav>
+    ${tab === 'activity' ? html`<div class="card">${S.timeline(activity, { showGuest: true })}</div>`
+    : tab === 'calls' ? S.callsTable(S.eventCalls(e.id), (c) => `${base}/calls/${c.id}/recording`) : html`
       ${S.filterBar(e.id, filter)}
       <div class="table-wrap"><table class="guests">
         <tr><th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>Departure</th><th>Stay</th><th>Food</th><th>ID</th></tr>

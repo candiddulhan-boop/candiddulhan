@@ -54,6 +54,7 @@ r.post('/recordings', requireApiKey, S.recordingUpload.single('file'), (req, res
   if (existing) {
     db.prepare('UPDATE calls SET recording_file = ?, duration_sec = COALESCE(duration_sec, ?) WHERE id = ?')
       .run(req.file.filename, b.duration ? Number(b.duration) : null, existing.id);
+    S.logActivity(guest.event_id, guest.id, b.caller || 'Phone', 'call', 'Call recording synced from phone');
     return res.json({ ok: true, call_id: existing.id, matched: true, guest: guest.name, attached_to_existing: true });
   }
 
@@ -61,6 +62,8 @@ r.post('/recordings', requireApiKey, S.recordingUpload.single('file'), (req, res
     VALUES (?,?,?,?,?,?,?, 'android', COALESCE(?, datetime('now')))`)
     .run(guest?.event_id ?? null, guest?.id ?? null, phone || null, b.direction === 'incoming' ? 'incoming' : 'outgoing',
       b.caller || null, b.duration ? Number(b.duration) : null, req.file.filename, calledAt);
+  if (guest) S.logActivity(guest.event_id, guest.id, b.caller || 'Phone', 'call',
+    `${b.direction === 'incoming' ? 'Incoming' : 'Outgoing'} call recorded on phone${b.duration ? ` (${Math.round(b.duration / 60)} min)` : ''}`);
   res.json({ ok: true, call_id: Number(info.lastInsertRowid), matched: !!guest, guest: guest?.name ?? null });
 });
 

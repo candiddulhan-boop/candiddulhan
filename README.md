@@ -8,16 +8,18 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 1. **Send invitations** to every guest on WhatsApp, each with their own RSVP link.
 2. **Collect RSVPs and guest details** such as headcount, arrival and departure, stay, food preference and **government ID** (with consent).
 3. **Share a live dashboard** with the client (couple or family) through one private link. It shows stats, the guest list, IDs, call recordings and a CSV download.
-4. **Run a calling team.** A mobile caller console gives tap-to-call, outcome logging and recording upload. An **Android recording upload API** lets recordings sync from the phone automatically.
+4. **Run your team like a CRM.** Each team member has their own login. You can assign guests to callers (or split them automatically), set follow-up reminders, keep a full activity timeline for every guest and track each person's performance.
+5. **Run a calling team.** A mobile caller console gives tap-to-call, outcome logging and recording upload. An **Android recording upload API** lets recordings sync from the phone automatically.
 
 ### Screens
 
 | URL | Who | What |
 |---|---|---|
-| `/admin` | Candid Dulhan team | Create weddings, import guests from CSV, send WhatsApp invites, edit guests, export CSV |
-| `/caller` | Calling team (phone) | Follow-up list, 📞 tap to call, log outcome and RSVP, attach recording |
+| `/admin` | Candid Dulhan admins | Create weddings, import guests from CSV, send WhatsApp invites, assign guests, edit guests, export CSV |
+| `/admin/team` | Admins | Add team members, set roles, reset passwords, deactivate; team performance |
+| `/caller` | Calling team (phone) | My follow-ups due today, my guests, 📞 tap to call, log outcome, RSVP and next follow-up, attach recording, notes |
 | `/i/<guest-token>` | Guest | Personal invitation and RSVP form (mobile first) |
-| `/c/<client-token>` | Your client | Read-only dashboard with stats, guests, IDs, calls and recordings, CSV |
+| `/c/<client-token>` | Your client | Read-only dashboard with stats, guests, latest updates feed, IDs, calls and recordings, CSV. Optional PIN. |
 | `/api/recordings` | Android phone | Upload call recordings (auto-matched to guests by phone number) |
 
 ### Run it
@@ -34,13 +36,22 @@ Everything (database, IDs, recordings) is stored in `DATA_DIR` (default `./data`
 
 To deploy, use any small VPS or a Node host that has a persistent disk, such as Railway, Render with a disk, a DigitalOcean droplet or AWS Lightsail. Put it behind HTTPS and set `BASE_URL` to the public URL, for example `https://rsvp.candiddulhan.com`.
 
+### Team CRM
+
+- **Accounts:** go to **Team → Add team member** and enter a name, login (email or phone), role and password. **Callers** only see the caller console; **admins** see everything. Deactivating someone signs them out immediately. The `ADMIN_PASSWORD` from `.env` always works as the owner login, and you can leave "Email or phone" empty when using it.
+- **Assigning guests:** on a wedding page, tick guests, then choose **Assign to… → Assign selected**. **⚖ Auto-split unassigned** shares every unassigned guest who hasn't confirmed equally among callers. When a caller calls an unassigned guest, that guest becomes theirs.
+- **Follow-ups:** when logging a call, set **Follow up on** (or tap *In 2 hours*, *Tomorrow 11 am* or *In 2 days*). Each caller's home screen lists **Follow-ups due today**, and overdue ones are shown in red. Logging a new call clears the old follow-up.
+- **Timeline:** every guest has a history of added or imported, invite sent, RSVP received or changed (by the guest or the team), ID uploaded, calls, recordings synced from the phone, assignments, follow-ups and notes, with who did each and when.
+- **Performance:** the team table (on each wedding and on the Weddings home) shows per person: guests assigned, still open, confirmed, calls, connected %, calls today and overdue follow-ups.
+- **Client view:** the client sees the guest list, a **Latest updates** feed (RSVPs, IDs and invites only, never internal notes or assignments) and calls. You can set an optional **client PIN** in wedding settings.
+
 ### Workflow for a new client
 
 1. **Admin → New wedding.** Enter the couple, date and venue, choose whether to collect IDs and travel details, and write the WhatsApp message template (`{name} {title} {date} {venue} {link}`).
 2. **Import guests** from a CSV with the columns `name, phone, side, group, max_pax, email`. The client can fill a Google Sheet and export it as CSV.
 3. **Send invites.** The green **WhatsApp** button opens WhatsApp with the message pre-filled for that guest and marks the guest as invited. Use **Link** to copy the RSVP link for SMS or email.
 4. **Share the client dashboard link** from the top of the wedding page. You can rotate the link in Settings.
-5. **Follow up by phone.** The caller console lists guests who haven't replied. The caller taps 📞 Call, and when they come back to the browser the log form opens automatically.
+5. **Assign and follow up by phone.** Auto-split the guests who haven't replied among your callers. Each caller works through **My guests** and **Follow-ups due today**: they tap 📞 Call, and when they come back to the browser the log form opens so they can save the outcome, RSVP and next follow-up.
 6. **Export CSV** for the hotel rooming list and transport planning.
 
 ### Call recordings from Android
@@ -88,8 +99,8 @@ Government IDs are sensitive personal data under India's DPDP Act 2023. The app:
 
 ```
 src/server.js        app setup, login
-src/db.js            SQLite schema (events, guests, calls)
-src/routes/admin.js  agency admin
+src/db.js            SQLite schema (events, guests, calls, users, activities) + migrations
+src/routes/admin.js  agency admin, team, assignment
 src/routes/rsvp.js   guest invitation / RSVP form
 src/routes/client.js client dashboard
 src/routes/caller.js caller console

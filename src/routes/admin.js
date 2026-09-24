@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const db = require('../db');
 const layout = require('../layout');
-const { requireRole } = require('../auth');
+const { requireRole, hashPassword } = require('../auth');
 const { html, token, parseCsv, maskId, fmtDate } = require('../util');
 const S = require('../shared');
 
@@ -32,11 +32,14 @@ function eventForm(e = {}) {
   <label>WhatsApp invite message <small>placeholders: {name} {title} {date} {venue} {link}</small>
     <textarea name="invite_message" rows="6">${e.invite_message || S.DEFAULT_INVITE}</textarea></label>
   <label class="check"><input type="checkbox" name="require_id" value="1" ${e.require_id ?? 1 ? 'checked' : ''}> Collect government ID from attending guests (for hotel check-in / venue security)</label>
-  <label class="check"><input type="checkbox" name="collect_travel" value="1" ${e.collect_travel ?? 1 ? 'checked' : ''}> Collect arrival, departure &amp; stay details</label>`;
+  <label class="check"><input type="checkbox" name="collect_travel" value="1" ${e.collect_travel ?? 1 ? 'checked' : ''}> Collect arrival, departure &amp; stay details</label>
+  <label>Client dashboard PIN <small>(optional — the client must enter it once per device; leave blank for link-only access)</small>
+    <input name="client_pin" inputmode="numeric" maxlength="12" value="${e.client_pin || ''}" autocomplete="off"></label>`;
 }
 
 const eventFields = (b) => [b.title?.trim(), b.client_name || null, b.client_phone || null, b.event_date || null,
-  b.venue || null, b.city || null, b.invite_message || null, b.welcome_note || null, b.require_id ? 1 : 0, b.collect_travel ? 1 : 0];
+  b.venue || null, b.city || null, b.invite_message || null, b.welcome_note || null, b.require_id ? 1 : 0, b.collect_travel ? 1 : 0,
+  b.client_pin?.trim() || null];
 
 // ---- Weddings list ----
 r.get('/', (req, res) => {
@@ -44,6 +47,7 @@ r.get('/', (req, res) => {
       SUM(g.rsvp_status = 'yes') yes FROM events e LEFT JOIN guests g ON g.event_id = e.id
     GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all();
   const unmatched = db.prepare('SELECT COUNT(*) n FROM calls WHERE event_id IS NULL').get().n;
+  const team = S.teamStats(null);
   res.send(page(req, 'Weddings', html`
     <div class="head"><h1>Weddings</h1></div>
     ${unmatched ? html`<p class="flash warn"><a href="/admin/unmatched">${unmatched} call recording${unmatched === 1 ? '' : 's'} could not be matched to a guest →</a></p>` : ''}
@@ -55,13 +59,15 @@ r.get('/', (req, res) => {
       </a>`)}</div>` : html`<p class="muted">No weddings yet. Create your first one below.</p>`}
     <details class="card" ${events.length ? '' : 'open'}><summary><strong>+ New wedding</strong></summary>
       <form method="post" action="/admin/events" class="form">${eventForm()}<button class="primary">Create wedding</button></form>
-    </details>`));
+    </details>
+    <h2>Team performance <small class="muted">(all weddings)</small></h2>
+    ${S.teamTable(team)}`));
 });
 
 r.post('/events', (req, res) => {
   if (!req.body.title?.trim()) return back(res, '/admin', 'Title is required');
   const info = db.prepare(`INSERT INTO events (title, client_name, client_phone, event_date, venue, city, invite_message,
-    welcome_note, require_id, collect_travel, client_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...eventFields(req.body), token(18));
+    welcome_note, require_id, collect_travel, client_pin, client_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...eventFields(req.body), token(18));
   back(res, `/admin/events/${info.lastInsertRowid}`, 'Wedding created. Add guests below.');
 });
 
@@ -69,8 +75,11 @@ r.post('/events', (req, res) => {
 r.get('/events/:id', (req, res) => {
   const e = getEvent(req.params.id);
   if (!e) return res.status(404).send('Not found');
-  const filter = { status: req.query.status, side: req.query.side, q: req.query.q };
+  const filter = { status: req.query.status, side: req.query.side, q: req.query.q, assigned: req.query.assigned, due: req.query.due };
   const guests = S.listGuests(e.id, filter);
+  const team = S.teamMembers();
+  const recent = db.prepare(`SELECT a.*, g.name guest_name FROM activities a LEFT JOIN guests g ON g.id = a.guest_id
+    WHERE a.event_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT 15`).all(e.id);
   res.send(page(req, e.title, html`
     <div class="head">
       <div><h1>${e.title}</h1><p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}
@@ -87,6 +96,11 @@ r.get('/events/:id', (req, res) => {
       <a class="btn" target="_blank" href="${S.clientUrl(req, e)}">Open</a></div>
     </div>
     ${S.statCards(S.stats(e.id))}
+
+    <div class="grid-crm">
+      <div class="card"><h3>Team on this wedding</h3>${S.teamTable(S.teamStats(e.id))}</div>
+      <div class="card"><h3>Recent activity</h3>${S.timeline(recent, { showGuest: true })}</div>
+    </div>
 
     <div class="grid2">
       <details class="card"><summary><strong>+ Add guest</strong></summary>
@@ -108,17 +122,28 @@ r.get('/events/:id', (req, res) => {
     </div>
 
     <h2>Guests <small class="muted">(${guests.length})</small></h2>
-    ${S.filterBar(e.id, filter)}
+    ${S.filterBar(e.id, filter, { me: req.user.uid, crm: true })}
+    <form method="post" action="/admin/events/${e.id}/assign" id="bulk">
+    ${team.length ? html`<div class="bulkbar">
+      <span><strong data-selcount>0</strong> selected</span>
+      <select name="user_id"><option value="">Assign to…</option><option value="none">— Unassign —</option>
+        ${team.map((u) => html`<option value="${u.id}">${u.name}</option>`)}</select>
+      <button name="mode" value="selected">Assign selected</button>
+      <button name="mode" value="auto" class="btn" data-confirm-click="Share all unassigned guests who haven’t replied equally among active team members?">⚖ Auto-split unassigned</button>
+    </div>` : ''}
     <div class="table-wrap"><table class="guests">
-      <tr><th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls</th><th>Invite</th></tr>
+      <tr>${team.length ? html`<th><input type="checkbox" data-selall aria-label="Select all"></th>` : ''}<th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls / follow-up</th><th>Owner</th><th>Invite</th></tr>
       ${guests.map((g) => html`<tr>
+        ${team.length ? html`<td><input type="checkbox" name="guest_ids" value="${g.id}" data-sel></td>` : ''}
         <td><a href="/admin/guests/${g.id}"><strong>${g.name}</strong></a><br><small class="muted">${g.phone || ''}</small></td>
         <td>${g.side || ''}<br><small class="muted">${g.group_name || ''}</small></td>
         <td>${S.badge(g.rsvp_status)}</td>
         <td>${g.rsvp_status === 'yes' ? g.pax ?? 1 : '–'} / ${g.max_pax}</td>
         <td>${fmtDate(g.arrival_date)}${g.arrival_mode ? html`<br><small class="muted">${g.arrival_mode}</small>` : ''}</td>
         <td>${g.id_file ? html`<a href="/admin/guests/${g.id}/id-file" target="_blank">${g.id_type || 'View'}</a>` : g.id_type ? g.id_type : '–'}</td>
-        <td>${g.call_count || ''}${g.last_outcome ? html`<br><small class="muted">${S.OUTCOMES[g.last_outcome] || g.last_outcome}</small>` : ''}</td>
+        <td>${g.call_count || ''}${g.last_outcome ? html`<br><small class="muted">${S.OUTCOMES[g.last_outcome] || g.last_outcome}</small>` : ''}
+          ${g.follow_up_at ? html`<br><small class="${S.isOverdue(g.follow_up_at) ? 'overdue' : 'muted'}">⏰ ${fmtDate(g.follow_up_at)}</small>` : ''}</td>
+        <td>${g.assignee || html`<span class="muted">—</span>`}</td>
         <td class="nowrap">
           ${g.phone ? html`<a class="btn sm wa" target="_blank" href="/admin/guests/${g.id}/whatsapp">${g.invited_at ? 'Resend' : 'WhatsApp'}</a>` : ''}
           <button type="button" class="btn sm" data-copy="${S.inviteUrl(req, g)}">Link</button>
@@ -126,6 +151,7 @@ r.get('/events/:id', (req, res) => {
         </td>
       </tr>`)}
     </table></div>
+    </form>
 
     <h2>Call log</h2>
     ${S.callsTable(S.eventCalls(e.id), (c) => `/admin/calls/${c.id}/recording`)}
@@ -133,6 +159,50 @@ r.get('/events/:id', (req, res) => {
     <form method="post" action="/admin/events/${e.id}/delete" class="danger-zone" data-confirm="Delete this wedding, all guests, IDs and recordings? This cannot be undone.">
       <button class="danger">Delete wedding</button>
     </form>`));
+});
+
+r.post('/events/:id/assign', (req, res) => {
+  const e = getEvent(req.params.id);
+  if (!e) return res.status(404).send('Not found');
+  const team = S.teamMembers();
+  const byId = new Map(team.map((u) => [u.id, u]));
+  const setOwner = db.prepare('UPDATE guests SET assigned_to = ? WHERE id = ? AND event_id = ?');
+  let n = 0;
+  db.exec('BEGIN');
+  try {
+    if (req.body.mode === 'auto') {
+      const callers = team.filter((u) => u.role === 'caller').length ? team.filter((u) => u.role === 'caller') : team;
+      if (!callers.length) throw Object.assign(new Error('Add team members first'), { user: true });
+      const load = new Map(callers.map((u) => [u.id, db.prepare(`SELECT COUNT(*) n FROM guests WHERE event_id = ? AND assigned_to = ?
+        AND rsvp_status IN ('pending','maybe')`).get(e.id, u.id).n]));
+      const todo = db.prepare(`SELECT id, name FROM guests WHERE event_id = ? AND assigned_to IS NULL AND rsvp_status IN ('pending','maybe')
+        ORDER BY side, group_name, name`).all(e.id);
+      for (const g of todo) {
+        const [uid] = [...load.entries()].sort((a, b) => a[1] - b[1])[0];
+        setOwner.run(uid, g.id, e.id);
+        load.set(uid, load.get(uid) + 1);
+        S.logActivity(e.id, g.id, req.user.name, 'assign', `Assigned to ${byId.get(uid).name} (auto-split)`);
+        n++;
+      }
+    } else {
+      const ids = [].concat(req.body.guest_ids || []).map(Number).filter(Boolean);
+      const uid = req.body.user_id === 'none' ? null : Number(req.body.user_id) || undefined;
+      if (uid === undefined || !ids.length) throw Object.assign(new Error('Pick guests and a team member'), { user: true });
+      if (uid && !byId.has(uid)) throw Object.assign(new Error('Unknown team member'), { user: true });
+      for (const id of ids) {
+        if (setOwner.run(uid, id, e.id).changes) {
+          S.logActivity(e.id, id, req.user.name, 'assign', uid ? `Assigned to ${byId.get(uid).name}` : 'Unassigned');
+          n++;
+        }
+      }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    if (err.user) return back(res, `/admin/events/${e.id}`, err.message);
+    throw err;
+  }
+  back(res, `/admin/events/${e.id}`, `Assigned ${n} guest${n === 1 ? '' : 's'}`);
 });
 
 r.get('/events/:id/settings', (req, res) => {
@@ -149,7 +219,7 @@ r.post('/events/:id/settings', (req, res) => {
   const e = getEvent(req.params.id);
   if (!e) return res.status(404).send('Not found');
   db.prepare(`UPDATE events SET title=?, client_name=?, client_phone=?, event_date=?, venue=?, city=?, invite_message=?,
-    welcome_note=?, require_id=?, collect_travel=?, client_token=? WHERE id=?`)
+    welcome_note=?, require_id=?, collect_travel=?, client_pin=?, client_token=? WHERE id=?`)
     .run(...eventFields(req.body), req.body.rotate_client_link ? token(18) : e.client_token, e.id);
   back(res, `/admin/events/${e.id}`, 'Saved');
 });
@@ -179,8 +249,9 @@ r.post('/events/:id/guests', (req, res) => {
   const e = getEvent(req.params.id);
   if (!e || !req.body.name?.trim()) return back(res, `/admin/events/${req.params.id}`, 'Name is required');
   const b = req.body;
-  insertGuest.run(e.id, b.name.trim(), b.phone?.trim() || null, b.email?.trim() || null, b.side || null,
+  const info = insertGuest.run(e.id, b.name.trim(), b.phone?.trim() || null, b.email?.trim() || null, b.side || null,
     b.group_name?.trim() || null, Math.max(1, Number(b.max_pax) || 1), token());
+  S.logActivity(e.id, info.lastInsertRowid, req.user.name, 'import', 'Added to guest list');
   back(res, `/admin/events/${e.id}`, `Added ${b.name.trim()}`);
 });
 
@@ -214,6 +285,7 @@ r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
         get(row, ix.group) || null, Math.max(1, parseInt(get(row, ix.pax), 10) || 1), token());
       added++;
     }
+    if (added) S.logActivity(e.id, null, req.user.name, 'import', `Imported ${added} guest${added === 1 ? '' : 's'} from CSV`);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
   back(res, `/admin/events/${e.id}`, `Imported ${added} guest${added === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (blank or duplicate)` : ''}`);
@@ -223,6 +295,7 @@ r.get('/guests/:id/whatsapp', (req, res) => {
   const g = getGuest(req.params.id);
   if (!g?.phone) return res.status(404).send('Guest has no phone number');
   db.prepare("UPDATE guests SET invited_at = datetime('now') WHERE id = ?").run(g.id);
+  S.logActivity(g.event_id, g.id, req.user.name, 'invite', g.invited_at ? 'WhatsApp invite re-sent' : 'WhatsApp invite sent');
   res.redirect(S.waUrl(req, getEvent(g.event_id), g));
 });
 
@@ -231,6 +304,7 @@ r.get('/guests/:id', (req, res) => {
   if (!g) return res.status(404).send('Not found');
   const e = getEvent(g.event_id);
   const calls = db.prepare('SELECT c.*, ? guest_name FROM calls c WHERE guest_id = ? ORDER BY called_at DESC').all(g.name, g.id);
+  const team = S.teamMembers();
   const sel = (name, opts, v) => html`<select name="${name}">${opts.map(([k, l]) => html`<option value="${k}" ${String(v ?? '') === String(k) ? 'selected' : ''}>${l}</option>`)}</select>`;
   res.send(page(req, g.name, html`
     <p><a href="/admin/events/${e.id}">← ${e.title}</a></p>
@@ -245,6 +319,9 @@ r.get('/guests/:id', (req, res) => {
       <div class="row"><label>Side${sel('side', [['', ''], ['Bride', 'Bride'], ['Groom', 'Groom']], g.side)}</label>
         <label>Group<input name="group_name" value="${g.group_name || ''}"></label></div>
       <div class="row"><label>Invited for (people)<input type="number" min="1" name="max_pax" value="${g.max_pax}"></label><label>Email<input name="email" value="${g.email || ''}"></label></div>
+      <h3>Ownership &amp; follow-up</h3>
+      <div class="row"><label>Owner${sel('assigned_to', [['', '— Unassigned —'], ...team.map((u) => [u.id, u.name])], g.assigned_to)}</label>
+        <label>Follow up on<input type="datetime-local" name="follow_up_at" value="${S.followUpToInput(g.follow_up_at)}"></label></div>
       <h3>RSVP</h3>
       <div class="row"><label>Status${sel('rsvp_status', Object.entries(S.STATUS_LABEL), g.rsvp_status)}</label>
         <label>People attending<input type="number" min="0" name="pax" value="${g.pax ?? ''}"></label></div>
@@ -265,8 +342,15 @@ r.get('/guests/:id', (req, res) => {
         <form method="post" action="/admin/guests/${g.id}/delete-id" data-confirm="Delete this guest's ID data?"><button class="danger sm">Delete ID data</button></form>`
         : html`<p class="muted">Not submitted yet.</p>`}
     </div>
-    <h2>Calls</h2>
-    ${S.callsTable(calls, (c) => `/admin/calls/${c.id}/recording`)}
+    <div class="grid2">
+      <div class="card"><h3>Timeline</h3>
+        <form method="post" action="/caller/guest/${g.id}/note" class="form noteform">
+          <input type="hidden" name="back" value="/admin/guests/${g.id}">
+          <textarea name="note" rows="2" placeholder="Add a note (e.g. spoke to son, confirming by Friday)" required></textarea>
+          <button class="sm">Add note</button></form>
+        ${S.timeline(S.guestTimeline(g.id))}</div>
+      <div><h3>Calls</h3>${S.callsTable(calls, (c) => `/admin/calls/${c.id}/recording`)}</div>
+    </div>
     <form method="post" action="/admin/guests/${g.id}/delete" class="danger-zone" data-confirm="Delete ${g.name}?"><button class="danger">Delete guest</button></form>`));
 });
 
@@ -275,6 +359,12 @@ r.post('/guests/:id', (req, res) => {
   if (!g) return res.status(404).send('Not found');
   const b = req.body;
   const status = S.STATUS_LABEL[b.rsvp_status] ? b.rsvp_status : g.rsvp_status;
+  const owner = b.assigned_to ? S.teamMembers().find((u) => u.id === Number(b.assigned_to)) : null;
+  const followUp = S.followUpToDb(b.follow_up_at);
+  db.prepare('UPDATE guests SET assigned_to = ?, follow_up_at = ? WHERE id = ?').run(owner?.id ?? null, followUp, g.id);
+  if ((owner?.id ?? null) !== g.assigned_to) S.logActivity(g.event_id, g.id, req.user.name, 'assign', owner ? `Assigned to ${owner.name}` : 'Unassigned');
+  if (followUp && followUp !== g.follow_up_at) S.logActivity(g.event_id, g.id, req.user.name, 'followup', `Follow-up set for ${fmtDate(followUp)}`);
+  if (status !== g.rsvp_status) S.logActivity(g.event_id, g.id, req.user.name, 'rsvp', `RSVP changed to ${S.STATUS_LABEL[status]}`);
   db.prepare(`UPDATE guests SET name=?, phone=?, email=?, side=?, group_name=?, max_pax=?, rsvp_status=?, pax=?,
     arrival_date=?, arrival_mode=?, arrival_details=?, departure_date=?, needs_stay=?, dietary=?, guest_notes=?, internal_notes=?,
     responded_at = CASE WHEN ? != 'pending' AND responded_at IS NULL THEN datetime('now') ELSE responded_at END WHERE id=?`)
@@ -304,6 +394,55 @@ r.post('/guests/:id/delete', (req, res) => {
 r.get('/guests/:id/id-file', (req, res) => S.sendUpload(res, 'ids', getGuest(req.params.id)?.id_file));
 r.get('/calls/:id/recording', (req, res) =>
   S.sendUpload(res, 'recordings', db.prepare('SELECT recording_file FROM calls WHERE id = ?').get(req.params.id)?.recording_file));
+
+// ---- Team ----
+r.get('/team', (req, res) => {
+  const users = db.prepare('SELECT * FROM users ORDER BY active DESC, name').all();
+  const roleSel = (v) => html`<select name="role"><option value="caller" ${v === 'caller' ? 'selected' : ''}>Caller</option><option value="admin" ${v === 'admin' ? 'selected' : ''}>Admin</option></select>`;
+  res.send(page(req, 'Team', html`
+    <p><a href="/admin">← Weddings</a></p><h1>Team</h1>
+    <p class="muted">Each team member logs in with their own email/phone and password. <strong>Callers</strong> see only the caller console; <strong>admins</strong> manage weddings, guests and the team.</p>
+    ${S.teamTable(S.teamStats(null))}
+    <h2>Accounts</h2>
+    <div class="table-wrap"><table>
+      <tr><th>Name</th><th>Login</th><th>Role</th><th>Status</th><th>Change</th></tr>
+      ${users.map((u) => html`<tr class="${u.active ? '' : 'muted'}"><td><strong>${u.name}</strong></td><td>${u.login}</td><td>${u.role}</td>
+        <td>${u.active ? 'Active' : 'Deactivated'}</td>
+        <td><form method="post" action="/admin/team/${u.id}" class="inline-form">
+          ${roleSel(u.role)}<input type="password" name="password" placeholder="New password" autocomplete="new-password" minlength="6">
+          <label class="check inline-check"><input type="checkbox" name="active" value="1" ${u.active ? 'checked' : ''}> Active</label>
+          <button class="sm">Save</button></form></td></tr>`)}
+    </table></div>
+    <details class="card" ${users.length ? '' : 'open'}><summary><strong>+ Add team member</strong></summary>
+      <form method="post" action="/admin/team" class="form">
+        <div class="row"><label>Name<input name="name" required></label><label>Login (email or phone)<input name="login" required autocomplete="off"></label></div>
+        <div class="row"><label>Role${roleSel('caller')}</label><label>Password<input type="password" name="password" required minlength="6" autocomplete="new-password"></label></div>
+        <button class="primary">Add</button>
+      </form></details>`));
+});
+
+r.post('/team', (req, res) => {
+  const b = req.body;
+  if (!b.name?.trim() || !b.login?.trim() || (b.password || '').length < 6) return back(res, '/admin/team', 'Name, login and a 6+ character password are required');
+  try {
+    db.prepare('INSERT INTO users (name, login, role, pass_hash) VALUES (?,?,?,?)')
+      .run(b.name.trim(), b.login.trim(), b.role === 'admin' ? 'admin' : 'caller', hashPassword(b.password));
+  } catch (err) {
+    if (/UNIQUE/.test(err.message)) return back(res, '/admin/team', 'That login is already used');
+    throw err;
+  }
+  back(res, '/admin/team', `Added ${b.name.trim()} — share their login and password with them`);
+});
+
+r.post('/team/:id', (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!u) return res.status(404).send('Not found');
+  const b = req.body;
+  if (b.password && b.password.length < 6) return back(res, '/admin/team', 'Password must be at least 6 characters');
+  db.prepare('UPDATE users SET role = ?, active = ?, pass_hash = COALESCE(?, pass_hash) WHERE id = ?')
+    .run(b.role === 'admin' ? 'admin' : 'caller', b.active ? 1 : 0, b.password ? hashPassword(b.password) : null, u.id);
+  back(res, '/admin/team', `Updated ${u.name}`);
+});
 
 // ---- Recordings uploaded from Android that didn't match a guest ----
 r.get('/unmatched', (req, res) => {

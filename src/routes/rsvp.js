@@ -92,6 +92,7 @@ r.post('/:token', S.idUpload.single('id_file'), (req, res) => {
     .run(status, pax, opt('arrival_date'), opt('arrival_mode'), opt('arrival_details'), opt('departure_date'),
       going && b.needs_stay !== '' && b.needs_stay != null ? Number(b.needs_stay) : null, opt('dietary'),
       b.guest_notes ? String(b.guest_notes).slice(0, 1000) : null, g.id);
+  S.logActivity(e.id, g.id, 'Guest', 'rsvp', `${g.responded_at ? 'Updated RSVP' : 'RSVP received'}: ${S.STATUS_LABEL[status]}${going ? ` (${pax} ${pax === 1 ? 'person' : 'people'})` : ''}`);
 
   if (going && e.require_id && (req.file || b.id_type || b.id_number)) {
     if (req.file) S.removeUpload('ids', g.id_file);
@@ -99,6 +100,7 @@ r.post('/:token', S.idUpload.single('id_file'), (req, res) => {
       id_consent_at=CASE WHEN ? THEN datetime('now') ELSE id_consent_at END WHERE id=?`)
       .run(b.id_type || null, b.id_number ? String(b.id_number).replace(/\s+/g, '').slice(0, 30) : null,
         req.file?.filename || null, b.id_consent ? 1 : 0, g.id);
+    if (req.file) S.logActivity(e.id, g.id, 'Guest', 'id', `ID uploaded${b.id_type ? ` (${b.id_type})` : ''}`);
   } else S.removeUpload('ids', req.file?.filename);
 
   res.redirect(`/i/${g.token}?done=1`);

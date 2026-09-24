@@ -130,28 +130,43 @@ const badge = (status) => html`<span class="badge ${status}">${STATUS_LABEL[stat
 // Filtered guest list for dashboards. filter: { status, side, q }
 function listGuests(eventId, filter = {}) {
   const where = ['g.event_id = ?'], args = [eventId];
-  if (filter.status && STATUS_LABEL[filter.status]) { where.push('g.rsvp_status = ?'); args.push(filter.status); }
+  if (filter.status === 'open') where.push("g.rsvp_status IN ('pending', 'maybe')");
+  else if (filter.status && STATUS_LABEL[filter.status]) { where.push('g.rsvp_status = ?'); args.push(filter.status); }
   if (filter.side) { where.push('g.side = ?'); args.push(filter.side); }
+  if (filter.assigned === 'none') where.push('g.assigned_to IS NULL');
+  else if (filter.assigned) { where.push('g.assigned_to = ?'); args.push(Number(filter.assigned)); }
+  if (filter.due) where.push("g.follow_up_at IS NOT NULL AND g.follow_up_at <= datetime('now', '+5 hours', '+30 minutes', 'start of day', '+1 day', '-5 hours', '-30 minutes')");
   if (filter.q) {
     where.push('(g.name LIKE ? OR g.phone LIKE ? OR g.group_name LIKE ?)');
     const like = `%${filter.q}%`; args.push(like, like, like);
   }
-  return db.prepare(`SELECT g.*,
+  return db.prepare(`SELECT g.*, u.name assignee,
       (SELECT COUNT(*) FROM calls c WHERE c.guest_id = g.id) call_count,
       (SELECT outcome FROM calls c WHERE c.guest_id = g.id ORDER BY called_at DESC LIMIT 1) last_outcome
-    FROM guests g WHERE ${where.join(' AND ')}
+    FROM guests g LEFT JOIN users u ON u.id = g.assigned_to WHERE ${where.join(' AND ')}
     ORDER BY CASE g.rsvp_status WHEN 'pending' THEN 0 WHEN 'maybe' THEN 1 WHEN 'yes' THEN 2 ELSE 3 END, g.name`).all(...args);
 }
 
-function filterBar(eventId, filter) {
+const teamMembers = () => db.prepare('SELECT id, name, role FROM users WHERE active = 1 ORDER BY name').all();
+
+// crm: show team-only controls (owner, follow-up due). Off for the client dashboard.
+function filterBar(eventId, filter, { me, crm } = {}) {
+  const team = crm ? teamMembers() : [];
   const sides = db.prepare("SELECT DISTINCT side FROM guests WHERE event_id = ? AND side IS NOT NULL AND side != '' ORDER BY 1").all(eventId);
   return html`<form class="filters" method="get">
     <input type="search" name="q" value="${filter.q || ''}" placeholder="Search name, phone, group">
     <select name="status"><option value="">All statuses</option>
+      <option value="open" ${filter.status === 'open' ? 'selected' : ''}>Not confirmed yet</option>
       ${Object.entries(STATUS_LABEL).map(([k, v]) => html`<option value="${k}" ${filter.status === k ? 'selected' : ''}>${v}</option>`)}
     </select>
     ${sides.length ? html`<select name="side"><option value="">Both sides</option>
       ${sides.map((r) => html`<option ${filter.side === r.side ? 'selected' : ''}>${r.side}</option>`)}</select>` : ''}
+    ${team.length ? html`<select name="assigned"><option value="">Everyone’s guests</option>
+      ${me ? html`<option value="${me}" ${String(filter.assigned) === String(me) ? 'selected' : ''}>My guests</option>` : ''}
+      <option value="none" ${filter.assigned === 'none' ? 'selected' : ''}>Unassigned</option>
+      ${team.filter((u) => u.id !== me).map((u) => html`<option value="${u.id}" ${String(filter.assigned) === String(u.id) ? 'selected' : ''}>${u.name}</option>`)}
+    </select>` : ''}
+    ${crm ? html`<label class="check inline-check"><input type="checkbox" name="due" value="1" ${filter.due ? 'checked' : ''}> Follow-up due</label>` : ''}
     <button>Filter</button>
   </form>`;
 }
@@ -175,6 +190,61 @@ function callsTable(calls, recUrl) {
 const eventCalls = (eventId, limit = 200) => db.prepare(`SELECT c.*, g.name guest_name FROM calls c
   LEFT JOIN guests g ON g.id = c.guest_id WHERE c.event_id = ? ORDER BY c.called_at DESC LIMIT ?`).all(eventId, limit);
 
+const ACTIVITY_ICON = { invite: '✉️', rsvp: '✅', id: '🪪', call: '📞', note: '📝', assign: '👤', import: '⇪', followup: '⏰' };
+
+function logActivity(eventId, guestId, actor, kind, detail) {
+  db.prepare('INSERT INTO activities (event_id, guest_id, actor, kind, detail) VALUES (?,?,?,?,?)')
+    .run(eventId ?? null, guestId ?? null, actor || null, kind, detail || null);
+}
+
+function timeline(items, { showGuest } = {}) {
+  if (!items.length) return html`<p class="muted">No activity yet.</p>`;
+  return html`<ul class="timeline">${items.map((a) => html`<li>
+    <span class="tl-icon">${ACTIVITY_ICON[a.kind] || '•'}</span>
+    <div><div>${showGuest && a.guest_name ? html`<strong>${a.guest_name}</strong> · ` : ''}${a.detail || a.kind}</div>
+      <small class="muted">${fmtDate(a.created_at)}${a.actor ? ` · ${a.actor}` : ''}</small></div>
+  </li>`)}</ul>`;
+}
+
+const guestTimeline = (guestId) => db.prepare('SELECT * FROM activities WHERE guest_id = ? ORDER BY created_at DESC, id DESC LIMIT 100').all(guestId);
+
+// Per-team-member progress for a wedding (or all weddings when eventId is null).
+function teamStats(eventId) {
+  const scope = eventId ? 'AND g.event_id = ?' : '';
+  const cscope = eventId ? 'AND c.event_id = ?' : '';
+  const a = eventId ? [eventId] : [];
+  return db.prepare(`SELECT u.id, u.name, u.role,
+      (SELECT COUNT(*) FROM guests g WHERE g.assigned_to = u.id ${scope}) assigned,
+      (SELECT COUNT(*) FROM guests g WHERE g.assigned_to = u.id AND g.rsvp_status IN ('pending','maybe') ${scope}) open,
+      (SELECT COUNT(*) FROM guests g WHERE g.assigned_to = u.id AND g.rsvp_status = 'yes' ${scope}) confirmed,
+      (SELECT COUNT(*) FROM calls c WHERE c.user_id = u.id ${cscope}) calls,
+      (SELECT COUNT(*) FROM calls c WHERE c.user_id = u.id AND c.outcome = 'connected' ${cscope}) connected,
+      (SELECT COUNT(*) FROM calls c WHERE c.user_id = u.id AND date(c.called_at, '+5 hours', '+30 minutes') = date('now', '+5 hours', '+30 minutes') ${cscope}) today,
+      (SELECT COUNT(*) FROM guests g WHERE g.assigned_to = u.id AND g.follow_up_at IS NOT NULL
+         AND g.follow_up_at <= datetime('now') ${scope}) overdue
+    FROM users u WHERE u.active = 1 ORDER BY u.name`).all(...a, ...a, ...a, ...a, ...a, ...a, ...a);
+}
+
+function teamTable(rows) {
+  if (!rows.length) return html`<p class="muted">No team members yet. <a href="/admin/team">Add your team</a> to assign guests and track calls per person.</p>`;
+  return html`<div class="table-wrap"><table class="mini">
+    <tr><th>Team member</th><th>Assigned</th><th>Still open</th><th>Confirmed</th><th>Calls</th><th>Connected</th><th>Today</th><th>Overdue follow-ups</th></tr>
+    ${rows.map((r) => html`<tr><td><strong>${r.name}</strong></td><td>${r.assigned}</td><td>${r.open}</td><td>${r.confirmed}</td>
+      <td>${r.calls}</td><td>${r.connected}${r.calls ? html` <small class="muted">(${pct(r.connected, r.calls)}%)</small>` : ''}</td>
+      <td>${r.today}</td><td>${r.overdue ? html`<span class="overdue">${r.overdue}</span>` : 0}</td></tr>`)}
+  </table></div>`;
+}
+
+// Stored as UTC 'YYYY-MM-DD HH:MM:SS'; <input type=datetime-local> works in IST.
+const IST_MS = 330 * 60 * 1000;
+const followUpToDb = (local) => {
+  if (!local) return null;
+  const t = Date.parse(`${local}:00Z`);
+  return isNaN(t) ? null : new Date(t - IST_MS).toISOString().replace('T', ' ').slice(0, 19);
+};
+const followUpToInput = (utc) => (utc ? new Date(Date.parse(utc.replace(' ', 'T') + 'Z') + IST_MS).toISOString().slice(0, 16) : '');
+const isOverdue = (utc) => !!utc && Date.parse(utc.replace(' ', 'T') + 'Z') <= Date.now();
+
 function guestsCsv(eventId, { withIdNumbers }) {
   const rows = db.prepare('SELECT * FROM guests WHERE event_id = ? ORDER BY side, group_name, name').all(eventId);
   const head = ['Name', 'Phone', 'Email', 'Side', 'Group', 'Invited for', 'RSVP', 'People attending', 'Arrival date',
@@ -189,4 +259,5 @@ function guestsCsv(eventId, { withIdNumbers }) {
 module.exports = {
   STATUS_LABEL, OUTCOMES, ID_TYPES, DEFAULT_INVITE, idUpload, recordingUpload, sendUpload, removeUpload,
   inviteUrl, clientUrl, inviteText, waUrl, stats, statCards, badge, listGuests, filterBar, callsTable, eventCalls, guestsCsv,
+  teamMembers, logActivity, timeline, guestTimeline, teamStats, teamTable, followUpToDb, followUpToInput, isOverdue,
 };

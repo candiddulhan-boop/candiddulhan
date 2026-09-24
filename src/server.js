@@ -25,16 +25,19 @@ const loginPage = (req, error) => layout({ title: 'Log in', user: null, body: ht
     <h1>Team login</h1>
     ${error ? html`<div class="flash warn">${error}</div>` : ''}
     <input type="hidden" name="next" value="${req.query.next || req.body?.next || ''}">
-    <label>Your name <small>(shown on call logs)</small><input name="name" autocomplete="name"></label>
-    <label>Password<input type="password" name="password" required autofocus></label>
+    <label>Email or phone<input name="login" autocomplete="username" autofocus></label>
+    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+    <details><summary class="muted small">Using the owner / shared password?</summary>
+      <label>Your name <small>(shown on call logs)</small><input name="name" autocomplete="name"></label></details>
     <button class="primary">Log in</button>
   </form>` });
 
 app.get('/login', (req, res) => res.send(loginPage(req)));
 app.post('/login', (req, res) => {
-  const role = auth.roleFor(req.body.password);
-  if (!role) return res.status(401).send(loginPage(req, 'Wrong password'));
-  auth.login(res, role, (req.body.name || '').trim().slice(0, 40) || role);
+  const user = auth.authenticate(req.body.login, req.body.password, req.body.name);
+  if (!user) return res.status(401).send(loginPage(req, 'Wrong login or password'));
+  auth.login(res, user);
+  const role = user.role;
   const next = req.body.next || '';
   const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : null;
   res.redirect(safeNext && (role === 'admin' || safeNext.startsWith('/caller')) ? safeNext : role === 'admin' ? '/admin' : '/caller');
