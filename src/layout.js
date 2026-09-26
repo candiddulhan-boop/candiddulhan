@@ -1,6 +1,6 @@
 const { html, raw } = require('./util');
 
-function layout({ title, user, body, nav = true, flash }) {
+function layout({ title, user, body, nav = true, flash, event }) {
   return html`<!doctype html>
 <html lang="en">
 <head>
@@ -14,7 +14,7 @@ function layout({ title, user, body, nav = true, flash }) {
 </head>
 <body>
 ${nav ? html`<header class="topbar">
-  <a class="brand" href="${user?.role === 'caller' ? '/caller' : '/admin'}">Candid Dulhan <span>RSVP</span></a>
+  <a class="brand" href="${user?.role === 'caller' ? '/caller' : '/admin'}">${user && !user.platform ? html`${user.org_name} <span>by Candid Dulhan</span>` : html`Candid Dulhan <span>RSVP</span>`}</a>
   ${user ? html`<nav>
     ${user.role === 'admin' ? html`<a href="/admin">Weddings</a><a href="/admin/team">Team</a>` : ''}
     <a href="/caller">Caller</a>
@@ -25,6 +25,7 @@ ${nav ? html`<header class="topbar">
 ${flash ? html`<div class="flash">${flash}</div>` : ''}
 ${raw(String(body))}
 </main>
+${event ? html`<footer class="powered">${event.is_platform ? html`Candid Dulhan RSVP` : html`Guest management by <strong>${event.org_name}</strong> · Powered by Candid Dulhan`}</footer>` : ''}
 <script src="/static/app.js" defer></script>
 </body>
 </html>`.toString();

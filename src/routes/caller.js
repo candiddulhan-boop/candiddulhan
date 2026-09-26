@@ -5,6 +5,7 @@ const layout = require('../layout');
 const { requireRole } = require('../auth');
 const { html, fmtDate } = require('../util');
 const S = require('../shared');
+const T = require('../tenancy');
 
 const r = express.Router();
 r.use(requireRole('admin', 'caller'));
@@ -25,6 +26,7 @@ function guestCard(g, { showEvent } = {}) {
 
 r.get('/', (req, res) => {
   const mine = req.user.uid;
+  const scope = T.eventScope(req.user);
   // Follow-ups due by the end of today (IST): mine if I have an account, otherwise everyone's.
   const due = db.prepare(`SELECT g.*, e.title event_title,
       (SELECT COUNT(*) FROM calls c WHERE c.guest_id = g.id) call_count,
@@ -32,13 +34,14 @@ r.get('/', (req, res) => {
     FROM guests g JOIN events e ON e.id = g.event_id
     WHERE g.follow_up_at IS NOT NULL AND g.rsvp_status != 'no'
       AND g.follow_up_at <= datetime('now', '+5 hours', '+30 minutes', 'start of day', '+1 day', '-5 hours', '-30 minutes')
-      ${mine ? 'AND g.assigned_to = ?' : ''}
-    ORDER BY g.follow_up_at`).all(...(mine ? [mine] : []));
+      AND ${scope.sql} ${mine ? 'AND g.assigned_to = ?' : ''}
+    ORDER BY g.follow_up_at`).all(...scope.args, ...(mine ? [mine] : []));
   const events = db.prepare(`SELECT e.id, e.title, e.event_date, COUNT(g.id) total,
       SUM(g.rsvp_status IN ('pending','maybe')) open,
       SUM(g.rsvp_status IN ('pending','maybe') AND g.assigned_to = ?) my_open
-    FROM events e LEFT JOIN guests g ON g.event_id = e.id GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all(mine ?? -1);
-  const me = mine && S.teamStats(null).find((u) => u.id === mine);
+    FROM events e LEFT JOIN guests g ON g.event_id = e.id WHERE ${scope.sql}
+    GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all(mine ?? -1, ...scope.args);
+  const me = mine && S.teamStats(null, [{ id: mine }])[0];
   res.send(page(req, 'Caller', html`
     <h1>Hi ${req.user.name} 👋</h1>
     ${me ? html`<section class="stats small-stats">
@@ -55,11 +58,11 @@ r.get('/', (req, res) => {
 });
 
 r.get('/:eventId', (req, res) => {
-  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.eventId);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.eventId);
+  if (!e) return;
   const filter = {
     status: req.query.status ?? 'open', q: req.query.q, side: req.query.side, due: req.query.due,
-    assigned: req.query.assigned ?? (req.user.uid && S.teamMembers().length ? String(req.user.uid) : ''),
+    assigned: req.query.assigned ?? (req.user.uid && T.eventTeam(e).length ? String(req.user.uid) : ''),
   };
   const guests = S.listGuests(e.id, filter);
   res.send(page(req, e.title, html`<h1>${e.title}</h1>
@@ -69,9 +72,9 @@ r.get('/:eventId', (req, res) => {
 });
 
 r.get('/guest/:id', (req, res) => {
+  const { e } = T.loadGuest(req, res, req.params.id);
+  if (!e) return;
   const g = db.prepare('SELECT g.*, u.name assignee FROM guests g LEFT JOIN users u ON u.id = g.assigned_to WHERE g.id = ?').get(req.params.id);
-  if (!g) return res.status(404).send('Not found');
-  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(g.event_id);
   const calls = db.prepare('SELECT c.*, ? guest_name FROM calls c WHERE guest_id = ? ORDER BY called_at DESC').all(g.name, g.id);
   res.send(page(req, g.name, html`
     <p><a href="/caller/${e.id}">← ${e.title}</a></p>
@@ -106,8 +109,8 @@ r.get('/guest/:id', (req, res) => {
 });
 
 r.post('/guest/:id', S.recordingUpload.single('recording'), (req, res) => {
-  const g = db.prepare('SELECT * FROM guests WHERE id = ?').get(req.params.id);
-  if (!g) { S.removeUpload('recordings', req.file?.filename); return res.status(404).send('Not found'); }
+  const { g } = T.loadGuest(req, res, req.params.id);
+  if (!g) { S.removeUpload('recordings', req.file?.filename); return; }
   const b = req.body, who = req.user.name;
   const outcome = S.OUTCOMES[b.outcome] ? b.outcome : null;
   db.prepare(`INSERT INTO calls (event_id, guest_id, phone, caller, user_id, outcome, notes, duration_sec, recording_file, source)
@@ -136,15 +139,18 @@ r.post('/guest/:id', S.recordingUpload.single('recording'), (req, res) => {
 });
 
 r.post('/guest/:id/note', (req, res) => {
-  const g = db.prepare('SELECT * FROM guests WHERE id = ?').get(req.params.id);
-  if (!g) return res.status(404).send('Not found');
+  const { g } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
   const note = String(req.body.note || '').trim().slice(0, 2000);
   if (note) S.logActivity(g.event_id, g.id, req.user.name, 'note', note);
   const backTo = req.body.back === `/admin/guests/${g.id}` && req.user.role === 'admin' ? req.body.back : `/caller/guest/${g.id}`;
   res.redirect(`${backTo}?msg=${encodeURIComponent(note ? 'Note added' : 'Note was empty')}`);
 });
 
-r.get('/calls/:id/recording', (req, res) =>
-  S.sendUpload(res, 'recordings', db.prepare('SELECT recording_file FROM calls WHERE id = ?').get(req.params.id)?.recording_file));
+r.get('/calls/:id/recording', (req, res) => {
+  const c = db.prepare('SELECT * FROM calls WHERE id = ?').get(req.params.id);
+  if (!c?.event_id || !T.canAccessEvent(req.user, T.getEvent(c.event_id))) return res.status(404).send('Not found');
+  S.sendUpload(res, 'recordings', c.recording_file);
+});
 
 module.exports = r;

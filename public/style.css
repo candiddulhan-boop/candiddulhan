@@ -155,3 +155,14 @@ audio { height: 34px; max-width: 240px; }
 .grid-crm { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
 .grid-crm .timeline { max-height: 340px; }
 @media (max-width: 900px) { .grid-crm { grid-template-columns: 1fr; } }
+
+/* Multi-company + RSVP desk service */
+.powered { text-align: center; color: var(--muted); font-size: .8rem; padding: 20px 16px 32px; }
+.card.service { border-color: var(--gold); background: #fffaf0; }
+.card.service.active { background: #f1f8f3; border-color: #bfe0cb; }
+.card.service form.inline { margin-left: 8px; }
+.badge.svc-requested { background: #fbf1d6; color: #8a6a0a; }
+.badge.svc-active { background: #e3f4ea; color: var(--yes); }
+.badge.svc-declined { background: #fbe7e5; color: var(--no); }
+.signup { max-width: 520px; margin: 6vh auto; }
+.signup h1 { font-family: 'Cormorant Garamond', serif; color: var(--brand); font-size: 2rem; }

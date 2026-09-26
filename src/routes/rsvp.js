@@ -8,7 +8,7 @@ const r = express.Router();
 
 const load = (tokenParam) => {
   const g = db.prepare('SELECT * FROM guests WHERE token = ?').get(tokenParam);
-  return g ? { g, e: db.prepare('SELECT * FROM events WHERE id = ?').get(g.event_id) } : null;
+  return g ? { g, e: db.prepare('SELECT e.*, o.name org_name, o.is_platform FROM events e JOIN orgs o ON o.id = e.org_id WHERE e.id = ?').get(g.event_id) } : null;
 };
 
 const notFound = (res) => res.status(404).send(layout({ title: 'Invitation not found', nav: false,
@@ -66,12 +66,12 @@ r.get('/:token', (req, res) => {
   const { e, g } = d;
   if (req.query.done) {
     const msg = { yes: 'We can’t wait to celebrate with you!', maybe: 'Thank you — please update us once your plans are confirmed.', no: 'Thank you for letting us know. You will be missed!' }[g.rsvp_status];
-    return res.send(layout({ title: e.title, nav: false, body: html`
+    return res.send(layout({ title: e.title, nav: false, event: e, body: html`
       <div class="invite"><p class="eyebrow">${e.title}</p><h1 class="couple">Thank you, ${g.name}</h1><p class="note">${msg}</p>
       ${g.rsvp_status !== 'no' && e.require_id && !g.id_file ? html`<p class="flash warn">Please remember to upload your ID so we can arrange your check-in.</p>` : ''}
       <p><a class="btn" href="/i/${g.token}">Edit my response</a></p></div>` }));
   }
-  res.send(layout({ title: e.title, nav: false, body: form(e, g) }));
+  res.send(layout({ title: e.title, nav: false, event: e, body: form(e, g) }));
 });
 
 r.post('/:token', S.idUpload.single('id_file'), (req, res) => {
@@ -80,7 +80,7 @@ r.post('/:token', S.idUpload.single('id_file'), (req, res) => {
   const { e, g } = d;
   const b = req.body;
   const status = ['yes', 'no', 'maybe'].includes(b.rsvp_status) ? b.rsvp_status : null;
-  const fail = (msg) => { S.removeUpload('ids', req.file?.filename); res.status(400).send(layout({ title: e.title, nav: false, body: form(e, { ...g, ...b }, msg) })); };
+  const fail = (msg) => { S.removeUpload('ids', req.file?.filename); res.status(400).send(layout({ title: e.title, nav: false, event: e, body: form(e, { ...g, ...b }, msg) })); };
   if (!status) return fail('Please choose whether you will attend.');
   if (req.file && !b.id_consent) return fail('Please tick the consent box to share your ID.');
 

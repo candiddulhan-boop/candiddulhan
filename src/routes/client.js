@@ -9,7 +9,7 @@ const S = require('../shared');
 const r = express.Router({ mergeParams: true });
 
 r.use((req, res, next) => {
-  req.event = db.prepare('SELECT * FROM events WHERE client_token = ?').get(req.params.ctoken);
+  req.event = db.prepare('SELECT e.*, o.name org_name, o.is_platform FROM events e JOIN orgs o ON o.id = e.org_id WHERE e.client_token = ?').get(req.params.ctoken);
   if (!req.event) return res.status(404).send('Dashboard not found. Ask your planner for a fresh link.');
   res.setHeader('Cache-Control', 'private, no-store');
   next();
@@ -18,7 +18,7 @@ r.use((req, res, next) => {
 // Optional PIN: once entered, remembered on this device with a signed cookie.
 const pinCookie = (e) => `cd_client_${e.id}`;
 const pinValue = (e) => sign(`${e.client_token}:${e.client_pin}`);
-const pinPage = (e, error) => layout({ title: e.title, nav: false, body: html`
+const pinPage = (e, error) => layout({ title: e.title, nav: false, event: e, body: html`
   <form method="post" class="form card login">
     <p class="eyebrow">Guest dashboard</p><h1 class="couple">${e.title}</h1>
     ${error ? html`<div class="flash warn">${error}</div>` : ''}
@@ -51,8 +51,8 @@ r.get('/', (req, res) => {
   // Clients see guest-facing activity only (not the team's internal notes or assignments).
   const activity = tab === 'activity' ? db.prepare(`SELECT a.*, g.name guest_name FROM activities a JOIN guests g ON g.id = a.guest_id
     WHERE a.event_id = ? AND a.kind IN ('rsvp', 'id', 'invite') ORDER BY a.created_at DESC, a.id DESC LIMIT 200`).all(e.id) : [];
-  res.send(layout({ title: e.title, nav: false, body: html`
-    <div class="head"><div><p class="eyebrow">Guest dashboard</p><h1 class="couple">${e.title}</h1>
+  res.send(layout({ title: e.title, nav: false, event: e, body: html`
+    <div class="head"><div><p class="eyebrow">Guest dashboard${e.is_platform ? '' : ` · ${e.org_name}`}</p><h1 class="couple">${e.title}</h1>
       <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p></div>
       <div class="actions"><a class="btn" href="${base}/export.csv">Download guest list (CSV)</a></div></div>
     ${S.statCards(S.stats(e.id))}
@@ -74,7 +74,7 @@ r.get('/', (req, res) => {
           <td>${g.id_file ? html`<a target="_blank" href="${base}/guests/${g.id}/id-file">${g.id_type || 'View'}</a><br><small class="muted">${maskId(g.id_number)}</small>` : g.rsvp_status === 'yes' && e.require_id ? html`<span class="muted">Pending</span>` : ''}</td>
         </tr>`)}
       </table></div>`}
-    <p class="muted small center">Managed by Candid Dulhan · This link is private — please don’t forward it.</p>` }));
+    <p class="muted small center">This link is private — please don’t forward it.</p>` }));
 });
 
 r.get('/export.csv', (req, res) => {

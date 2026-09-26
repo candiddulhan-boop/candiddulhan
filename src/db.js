@@ -100,6 +100,19 @@ CREATE INDEX IF NOT EXISTS activities_guest ON activities(guest_id);
 CREATE INDEX IF NOT EXISTS activities_event ON activities(event_id, created_at);
 `);
 
+// Event-management companies using the platform. The one with is_platform = 1 is Candid Dulhan itself,
+// whose team can also work on partner weddings that have hired the RSVP-desk service.
+db.exec(`CREATE TABLE IF NOT EXISTS orgs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  contact_name TEXT,
+  phone TEXT,
+  email TEXT,
+  city TEXT,
+  is_platform INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
 // Additive migrations for databases created by earlier versions.
 function addColumn(table, column, type) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -110,5 +123,19 @@ addColumn('guests', 'follow_up_at', 'TEXT');
 addColumn('calls', 'user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
 addColumn('events', 'client_pin', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS guests_assigned ON guests(assigned_to, follow_up_at)');
+
+addColumn('users', 'org_id', 'INTEGER REFERENCES orgs(id)');
+addColumn('events', 'org_id', 'INTEGER REFERENCES orgs(id)');
+// Candid Dulhan RSVP-desk service for this wedding: none | requested | active | declined
+addColumn('events', 'service_status', "TEXT NOT NULL DEFAULT 'none'");
+addColumn('events', 'service_note', 'TEXT');
+addColumn('events', 'service_updated_at', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS events_org ON events(org_id, service_status)');
+
+// Everything created before multi-company support belongs to Candid Dulhan.
+db.platformOrgId = db.prepare('SELECT id FROM orgs WHERE is_platform = 1').get()?.id
+  ?? Number(db.prepare("INSERT INTO orgs (name, is_platform) VALUES ('Candid Dulhan', 1)").run().lastInsertRowid);
+db.prepare('UPDATE users SET org_id = ? WHERE org_id IS NULL').run(db.platformOrgId);
+db.prepare('UPDATE events SET org_id = ? WHERE org_id IS NULL').run(db.platformOrgId);
 
 module.exports = db;

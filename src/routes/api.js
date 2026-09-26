@@ -11,8 +11,9 @@ const r = express.Router();
 function findGuestByPhone(phone) {
   const key = phoneKey(phone);
   if (key.length < 10) return null;
+  // Recordings come from Candid Dulhan's phones: only match weddings we own or serve.
   const candidates = db.prepare(`SELECT g.*, e.event_date FROM guests g JOIN events e ON e.id = g.event_id
-    WHERE g.phone IS NOT NULL AND g.phone LIKE ?`).all(`%${key.slice(-4)}`).filter((g) => phoneKey(g.phone) === key);
+    WHERE g.phone IS NOT NULL AND g.phone LIKE ? AND (e.org_id = ? OR e.service_status = 'active')`).all(`%${key.slice(-4)}`, db.platformOrgId).filter((g) => phoneKey(g.phone) === key);
   const today = new Date().toISOString().slice(0, 10);
   candidates.sort((a, b) => {
     const au = (a.event_date || '9999') >= today, bu = (b.event_date || '9999') >= today;

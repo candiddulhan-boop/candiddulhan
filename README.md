@@ -11,6 +11,15 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 4. **Run your team like a CRM.** Each team member has their own login. You can assign guests to callers (or split them automatically), set follow-up reminders, keep a full activity timeline for every guest and track each person's performance.
 5. **Run a calling team.** A mobile caller console gives tap-to-call, outcome logging and recording upload. An **Android recording upload API** lets recordings sync from the phone automatically.
 
+### Business model: free software, paid RSVP desk
+
+- **Event management companies sign up free** at `/signup`. Each company gets its own private workspace: its own weddings, guests, team and client dashboards. Companies can never see each other's data.
+- Guests and couples see the **event company's name**, with a small "Powered by Candid Dulhan" line underneath.
+- On any wedding, a company can click **"Let Candid Dulhan's RSVP desk call your guests"** and describe what they need.
+- The request appears on **your Platform dashboard** (`/admin/platform`). When you **Accept**, your callers get access to that wedding only. When the company ends the service, your access is removed and your callers' guests are unassigned.
+- The Platform dashboard also lists every partner company, their weddings, guest counts and last activity. It is your sales pipeline.
+- Logging in with `ADMIN_PASSWORD` always signs you into the Candid Dulhan workspace.
+
 ### Screens
 
 | URL | Who | What |
@@ -41,7 +50,10 @@ npm run seed        # demo wedding with 24 guests, 3 team members, calls and fol
 npm start           # open http://localhost:3000
 ```
 
-**Demo logins** (password `demo123`): `priya@demo.in` (admin), `neha@demo.in` and `ravi@demo.in` (callers).
+**Demo logins** (password `demo123`):
+- `meera@royalknot.demo`: a partner event company with one wedding using your RSVP desk and one wedding requesting it
+- `priya@demo.in`: Candid Dulhan admin (Platform dashboard, accept requests)
+- `neha@demo.in`, `ravi@demo.in`: Candid Dulhan callers working the partner wedding
 Owner login: leave "Email or phone" empty and use `ADMIN_PASSWORD` (`admin` if it isn't set).
 
 ### Run it
@@ -122,7 +134,9 @@ Government IDs are sensitive personal data under India's DPDP Act 2023. The app:
 ```
 src/server.js        app setup, login
 src/db.js            SQLite schema (events, guests, calls, users, activities) + migrations
-src/routes/admin.js  agency admin, team, assignment
+src/tenancy.js       who can see which company's weddings
+src/routes/admin.js  agency admin, team, assignment, RSVP-desk service, platform dashboard
+test/app.test.js     end-to-end tests (npm test), including data isolation between companies
 src/routes/rsvp.js   guest invitation / RSVP form
 src/routes/client.js client dashboard
 src/routes/caller.js caller console

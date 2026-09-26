@@ -5,14 +5,14 @@ const layout = require('../layout');
 const { requireRole, hashPassword } = require('../auth');
 const { html, token, parseCsv, maskId, fmtDate } = require('../util');
 const S = require('../shared');
+const T = require('../tenancy');
 
 const r = express.Router();
 r.use(requireRole('admin'));
 
 const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
-const getEvent = (id) => db.prepare('SELECT * FROM events WHERE id = ?').get(id);
-const getGuest = (id) => db.prepare('SELECT * FROM guests WHERE id = ?').get(id);
+const getEvent = T.getEvent;
 const back = (res, url, msg) => res.redirect(`${url}${msg ? `${url.includes('?') ? '&' : '?'}msg=${encodeURIComponent(msg)}` : ''}`);
 const page = (req, title, body) => layout({ title, user: req.user, body, flash: req.query.msg });
 
@@ -42,42 +42,54 @@ const eventFields = (b) => [b.title?.trim(), b.client_name || null, b.client_pho
   b.client_pin?.trim() || null];
 
 // ---- Weddings list ----
+const eventCards = (events, { partner } = {}) => html`<div class="cards">${events.map((e) => html`
+  <a class="card event-card" href="/admin/events/${e.id}">
+    ${partner ? html`<p class="eyebrow">${e.org_name}</p>` : ''}
+    <h2>${e.title}</h2>
+    <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p>
+    <p>${e.guests || 0} guests · ${e.responded || 0} responded · <strong>${e.yes || 0} attending</strong></p>
+    ${!partner && e.service_status !== 'none' ? html`<p><span class="badge svc-${e.service_status}">RSVP desk: ${T.SERVICE_LABEL[e.service_status]}</span></p>` : ''}
+  </a>`)}</div>`;
+
+const EVENT_LIST_SQL = `SELECT e.*, o.name org_name, COUNT(g.id) guests, SUM(g.rsvp_status != 'pending') responded,
+    SUM(g.rsvp_status = 'yes') yes FROM events e JOIN orgs o ON o.id = e.org_id LEFT JOIN guests g ON g.event_id = e.id`;
+
 r.get('/', (req, res) => {
-  const events = db.prepare(`SELECT e.*, COUNT(g.id) guests, SUM(g.rsvp_status != 'pending') responded,
-      SUM(g.rsvp_status = 'yes') yes FROM events e LEFT JOIN guests g ON g.event_id = e.id
-    GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all();
-  const unmatched = db.prepare('SELECT COUNT(*) n FROM calls WHERE event_id IS NULL').get().n;
-  const team = S.teamStats(null);
+  const u = req.user;
+  const own = db.prepare(`${EVENT_LIST_SQL} WHERE e.org_id = ? GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all(u.org_id);
+  const partner = u.platform ? db.prepare(`${EVENT_LIST_SQL} WHERE e.org_id != ? AND e.service_status = 'active'
+    GROUP BY e.id ORDER BY e.event_date IS NULL, e.event_date`).all(u.org_id) : [];
+  const requests = u.platform ? db.prepare("SELECT COUNT(*) n FROM events WHERE service_status = 'requested'").get().n : 0;
+  const unmatched = u.platform ? db.prepare('SELECT COUNT(*) n FROM calls WHERE event_id IS NULL').get().n : 0;
   res.send(page(req, 'Weddings', html`
-    <div class="head"><h1>Weddings</h1></div>
+    <div class="head"><h1>Weddings</h1>${u.platform ? html`<div class="actions"><a class="btn" href="/admin/platform">Platform dashboard</a></div>` : ''}</div>
+    ${requests ? html`<p class="flash"><a href="/admin/platform">🤝 ${requests} wedding${requests === 1 ? '' : 's'} requested the Candid Dulhan RSVP desk →</a></p>` : ''}
     ${unmatched ? html`<p class="flash warn"><a href="/admin/unmatched">${unmatched} call recording${unmatched === 1 ? '' : 's'} could not be matched to a guest →</a></p>` : ''}
-    ${events.length ? html`<div class="cards">${events.map((e) => html`
-      <a class="card event-card" href="/admin/events/${e.id}">
-        <h2>${e.title}</h2>
-        <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p>
-        <p>${e.guests || 0} guests · ${e.responded || 0} responded · <strong>${e.yes || 0} attending</strong></p>
-      </a>`)}</div>` : html`<p class="muted">No weddings yet. Create your first one below.</p>`}
-    <details class="card" ${events.length ? '' : 'open'}><summary><strong>+ New wedding</strong></summary>
+    ${own.length ? eventCards(own) : html`<p class="muted">No weddings yet. Create your first one below.</p>`}
+    <details class="card" ${own.length ? '' : 'open'}><summary><strong>+ New wedding</strong></summary>
       <form method="post" action="/admin/events" class="form">${eventForm()}<button class="primary">Create wedding</button></form>
     </details>
+    ${partner.length ? html`<h2>Partner weddings <small class="muted">(RSVP desk service active)</small></h2>${eventCards(partner, { partner: true })}` : ''}
     <h2>Team performance <small class="muted">(all weddings)</small></h2>
-    ${S.teamTable(team)}`));
+    ${S.teamTable(S.teamStats(null, T.orgTeam(u.org_id)))}`));
 });
 
 r.post('/events', (req, res) => {
   if (!req.body.title?.trim()) return back(res, '/admin', 'Title is required');
   const info = db.prepare(`INSERT INTO events (title, client_name, client_phone, event_date, venue, city, invite_message,
-    welcome_note, require_id, collect_travel, client_pin, client_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...eventFields(req.body), token(18));
+    welcome_note, require_id, collect_travel, client_pin, client_token, org_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(...eventFields(req.body), token(18), req.user.org_id);
   back(res, `/admin/events/${info.lastInsertRowid}`, 'Wedding created. Add guests below.');
 });
 
 // ---- Wedding detail ----
 r.get('/events/:id', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  const owner = T.ownsEvent(req.user, e);
   const filter = { status: req.query.status, side: req.query.side, q: req.query.q, assigned: req.query.assigned, due: req.query.due };
   const guests = S.listGuests(e.id, filter);
-  const team = S.teamMembers();
+  const team = T.eventTeam(e);
   const recent = db.prepare(`SELECT a.*, g.name guest_name FROM activities a LEFT JOIN guests g ON g.id = a.guest_id
     WHERE a.event_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT 15`).all(e.id);
   res.send(page(req, e.title, html`
@@ -85,7 +97,7 @@ r.get('/events/:id', (req, res) => {
       <div><h1>${e.title}</h1><p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}
         ${e.client_name ? html` · Client: ${e.client_name}` : ''}</p></div>
       <div class="actions">
-        <a class="btn" href="/admin/events/${e.id}/settings">Settings</a>
+        ${owner ? html`<a class="btn" href="/admin/events/${e.id}/settings">Settings</a>` : ''}
         <a class="btn" href="/admin/events/${e.id}/export.csv">Export CSV</a>
         <a class="btn" href="/caller/${e.id}">Caller view</a>
       </div>
@@ -95,10 +107,11 @@ r.get('/events/:id', (req, res) => {
       <div class="copyrow"><input readonly value="${S.clientUrl(req, e)}"><button type="button" data-copy>Copy</button>
       <a class="btn" target="_blank" href="${S.clientUrl(req, e)}">Open</a></div>
     </div>
+    ${serviceCard(req, e)}
     ${S.statCards(S.stats(e.id))}
 
     <div class="grid-crm">
-      <div class="card"><h3>Team on this wedding</h3>${S.teamTable(S.teamStats(e.id))}</div>
+      <div class="card"><h3>Team on this wedding</h3>${S.teamTable(S.teamStats(e.id, team))}</div>
       <div class="card"><h3>Recent activity</h3>${S.timeline(recent, { showGuest: true })}</div>
     </div>
 
@@ -156,15 +169,67 @@ r.get('/events/:id', (req, res) => {
     <h2>Call log</h2>
     ${S.callsTable(S.eventCalls(e.id), (c) => `/admin/calls/${c.id}/recording`)}
 
-    <form method="post" action="/admin/events/${e.id}/delete" class="danger-zone" data-confirm="Delete this wedding, all guests, IDs and recordings? This cannot be undone.">
+    ${owner ? html`<form method="post" action="/admin/events/${e.id}/delete" class="danger-zone" data-confirm="Delete this wedding, all guests, IDs and recordings? This cannot be undone.">
       <button class="danger">Delete wedding</button>
-    </form>`));
+    </form>` : ''}`));
+});
+
+// ---- Candid Dulhan RSVP-desk service (the paid add-on) ----
+function serviceCard(req, e) {
+  const u = req.user;
+  if (u.platform && e.org_id === u.org_id) return ''; // our own wedding: we are the service
+  if (u.platform) {
+    const org = db.prepare('SELECT * FROM orgs WHERE id = ?').get(e.org_id);
+    return html`<div class="card service active"><strong>🤝 Partner wedding</strong> for <strong>${org.name}</strong>
+      ${org.contact_name || org.phone ? html` · ${[org.contact_name, org.phone].filter(Boolean).join(' · ')}` : ''}
+      ${e.service_note ? html`<p class="muted small">Their brief: ${e.service_note}</p>` : ''}</div>`;
+  }
+  const st = e.service_status;
+  if (st === 'active') return html`<div class="card service active"><strong>🤝 Candid Dulhan RSVP desk is working on this wedding.</strong>
+    <span class="muted">Their callers can see and call your guests; everything they do shows up here and on your client’s dashboard.</span>
+    <form method="post" action="/admin/events/${e.id}/service" class="inline" data-confirm="Stop the RSVP desk service for this wedding? Their team will lose access.">
+      <button name="action" value="end" class="btn sm">End service</button></form></div>`;
+  if (st === 'requested') return html`<div class="card service"><strong>⏳ RSVP desk requested.</strong>
+    <span class="muted">Candid Dulhan will contact you shortly to confirm scope and pricing.</span>
+    <form method="post" action="/admin/events/${e.id}/service" class="inline"><button name="action" value="cancel" class="btn sm">Cancel request</button></form></div>`;
+  return html`<details class="card service"><summary><strong>🤝 Short on time? Let Candid Dulhan’s RSVP desk call your guests</strong>
+      ${st === 'declined' ? html` <span class="muted">(previous request declined — you can ask again)</span>` : ''}</summary>
+    <p class="muted">Our trained team calls every guest, collects RSVPs, travel and IDs, and logs recorded calls here — you and your client watch progress live. You stay the planner; we work under your brand.</p>
+    <form method="post" action="/admin/events/${e.id}/service" class="form">
+      <label>What do you need? <small>(guest count, deadline, languages, hotel/travel coordination…)</small>
+        <textarea name="note" rows="3" required placeholder="~450 guests, calls in Hindi & Marwari, all RSVPs by 20 Nov, need rooming list for 2 hotels"></textarea></label>
+      <button name="action" value="request" class="primary">Request RSVP desk</button>
+    </form></details>`;
+}
+
+r.post('/events/:id/service', (req, res) => {
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  const u = req.user, action = req.body.action;
+  const set = (status, note) => {
+    db.prepare("UPDATE events SET service_status = ?, service_note = COALESCE(?, service_note), service_updated_at = datetime('now') WHERE id = ?")
+      .run(status, note ?? null, e.id);
+  };
+  const owner = T.ownsEvent(u, e);
+  if (owner && action === 'request' && ['none', 'declined'].includes(e.service_status)) {
+    set('requested', String(req.body.note || '').slice(0, 2000));
+    S.logActivity(e.id, null, u.name, 'service', 'Requested the Candid Dulhan RSVP desk');
+  } else if (owner && action === 'cancel' && e.service_status === 'requested') {
+    set('none');
+    S.logActivity(e.id, null, u.name, 'service', 'Cancelled the RSVP desk request');
+  } else if (owner && action === 'end' && e.service_status === 'active') {
+    set('none');
+    // Candid Dulhan callers lose access, so hand their open guests back.
+    db.prepare('UPDATE guests SET assigned_to = NULL WHERE event_id = ? AND assigned_to IN (SELECT id FROM users WHERE org_id = ?)').run(e.id, db.platformOrgId);
+    S.logActivity(e.id, null, u.name, 'service', 'Ended the RSVP desk service');
+  } else return back(res, `/admin/events/${e.id}`, 'That action isn’t available right now');
+  back(res, `/admin/events/${e.id}`, 'Updated');
 });
 
 r.post('/events/:id/assign', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
-  const team = S.teamMembers();
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  const team = T.eventTeam(e);
   const byId = new Map(team.map((u) => [u.id, u]));
   const setOwner = db.prepare('UPDATE guests SET assigned_to = ? WHERE id = ? AND event_id = ?');
   let n = 0;
@@ -206,8 +271,9 @@ r.post('/events/:id/assign', (req, res) => {
 });
 
 r.get('/events/:id/settings', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   res.send(page(req, `Settings · ${e.title}`, html`
     <p><a href="/admin/events/${e.id}">← ${e.title}</a></p><h1>Wedding settings</h1>
     <form method="post" action="/admin/events/${e.id}/settings" class="form card">${eventForm(e)}
@@ -216,8 +282,9 @@ r.get('/events/:id/settings', (req, res) => {
 });
 
 r.post('/events/:id/settings', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   db.prepare(`UPDATE events SET title=?, client_name=?, client_phone=?, event_date=?, venue=?, city=?, invite_message=?,
     welcome_note=?, require_id=?, collect_travel=?, client_pin=?, client_token=? WHERE id=?`)
     .run(...eventFields(req.body), req.body.rotate_client_link ? token(18) : e.client_token, e.id);
@@ -225,8 +292,9 @@ r.post('/events/:id/settings', (req, res) => {
 });
 
 r.post('/events/:id/delete', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   for (const g of db.prepare('SELECT id_file FROM guests WHERE event_id = ?').all(e.id)) S.removeUpload('ids', g.id_file);
   for (const c of db.prepare('SELECT recording_file FROM calls WHERE event_id = ?').all(e.id)) S.removeUpload('recordings', c.recording_file);
   db.prepare('DELETE FROM events WHERE id = ?').run(e.id);
@@ -234,8 +302,8 @@ r.post('/events/:id/delete', (req, res) => {
 });
 
 r.get('/events/:id/export.csv', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e) return res.status(404).send('Not found');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="guests-${e.id}.csv"`);
   res.send('﻿' + S.guestsCsv(e.id, { withIdNumbers: true }));
@@ -246,8 +314,9 @@ const insertGuest = db.prepare(`INSERT INTO guests (event_id, name, phone, email
   VALUES (?,?,?,?,?,?,?,?)`);
 
 r.post('/events/:id/guests', (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e || !req.body.name?.trim()) return back(res, `/admin/events/${req.params.id}`, 'Name is required');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!req.body.name?.trim()) return back(res, `/admin/events/${e.id}`, 'Name is required');
   const b = req.body;
   const info = insertGuest.run(e.id, b.name.trim(), b.phone?.trim() || null, b.email?.trim() || null, b.side || null,
     b.group_name?.trim() || null, Math.max(1, Number(b.max_pax) || 1), token());
@@ -256,8 +325,9 @@ r.post('/events/:id/guests', (req, res) => {
 });
 
 r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
-  const e = getEvent(req.params.id);
-  if (!e || !req.file) return back(res, `/admin/events/${req.params.id}`, 'Choose a CSV file');
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!req.file) return back(res, `/admin/events/${e.id}`, 'Choose a CSV file');
   const rows = parseCsv(req.file.buffer.toString('utf8'));
   if (rows.length < 2) return back(res, `/admin/events/${e.id}`, 'CSV is empty');
   const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]/g, ''));
@@ -292,19 +362,19 @@ r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
 });
 
 r.get('/guests/:id/whatsapp', (req, res) => {
-  const g = getGuest(req.params.id);
-  if (!g?.phone) return res.status(404).send('Guest has no phone number');
+  const { g, e } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
+  if (!g.phone) return res.status(404).send('Guest has no phone number');
   db.prepare("UPDATE guests SET invited_at = datetime('now') WHERE id = ?").run(g.id);
   S.logActivity(g.event_id, g.id, req.user.name, 'invite', g.invited_at ? 'WhatsApp invite re-sent' : 'WhatsApp invite sent');
-  res.redirect(S.waUrl(req, getEvent(g.event_id), g));
+  res.redirect(S.waUrl(req, e, g));
 });
 
 r.get('/guests/:id', (req, res) => {
-  const g = getGuest(req.params.id);
-  if (!g) return res.status(404).send('Not found');
-  const e = getEvent(g.event_id);
+  const { g, e } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
   const calls = db.prepare('SELECT c.*, ? guest_name FROM calls c WHERE guest_id = ? ORDER BY called_at DESC').all(g.name, g.id);
-  const team = S.teamMembers();
+  const team = T.eventTeam(e);
   const sel = (name, opts, v) => html`<select name="${name}">${opts.map(([k, l]) => html`<option value="${k}" ${String(v ?? '') === String(k) ? 'selected' : ''}>${l}</option>`)}</select>`;
   res.send(page(req, g.name, html`
     <p><a href="/admin/events/${e.id}">← ${e.title}</a></p>
@@ -355,11 +425,11 @@ r.get('/guests/:id', (req, res) => {
 });
 
 r.post('/guests/:id', (req, res) => {
-  const g = getGuest(req.params.id);
-  if (!g) return res.status(404).send('Not found');
+  const { g, e } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
   const b = req.body;
   const status = S.STATUS_LABEL[b.rsvp_status] ? b.rsvp_status : g.rsvp_status;
-  const owner = b.assigned_to ? S.teamMembers().find((u) => u.id === Number(b.assigned_to)) : null;
+  const owner = b.assigned_to ? T.eventTeam(e).find((u) => u.id === Number(b.assigned_to)) : null;
   const followUp = S.followUpToDb(b.follow_up_at);
   db.prepare('UPDATE guests SET assigned_to = ?, follow_up_at = ? WHERE id = ?').run(owner?.id ?? null, followUp, g.id);
   if ((owner?.id ?? null) !== g.assigned_to) S.logActivity(g.event_id, g.id, req.user.name, 'assign', owner ? `Assigned to ${owner.name}` : 'Unassigned');
@@ -376,33 +446,46 @@ r.post('/guests/:id', (req, res) => {
 });
 
 r.post('/guests/:id/delete-id', (req, res) => {
-  const g = getGuest(req.params.id);
-  if (!g) return res.status(404).send('Not found');
+  const { g, e } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
   S.removeUpload('ids', g.id_file);
   db.prepare('UPDATE guests SET id_type=NULL, id_number=NULL, id_file=NULL, id_consent_at=NULL WHERE id=?').run(g.id);
   back(res, `/admin/guests/${g.id}`, 'ID data deleted');
 });
 
 r.post('/guests/:id/delete', (req, res) => {
-  const g = getGuest(req.params.id);
-  if (!g) return res.status(404).send('Not found');
+  const { g, e } = T.loadGuest(req, res, req.params.id);
+  if (!g) return;
   S.removeUpload('ids', g.id_file);
   db.prepare('DELETE FROM guests WHERE id = ?').run(g.id);
   back(res, `/admin/events/${g.event_id}`, `Deleted ${g.name}`);
 });
 
-r.get('/guests/:id/id-file', (req, res) => S.sendUpload(res, 'ids', getGuest(req.params.id)?.id_file));
-r.get('/calls/:id/recording', (req, res) =>
-  S.sendUpload(res, 'recordings', db.prepare('SELECT recording_file FROM calls WHERE id = ?').get(req.params.id)?.recording_file));
+r.get('/guests/:id/id-file', (req, res) => {
+  const { g } = T.loadGuest(req, res, req.params.id);
+  if (g) S.sendUpload(res, 'ids', g.id_file);
+});
+
+// A call is visible if its wedding is; unmatched (no wedding) recordings belong to Candid Dulhan.
+function loadCall(req, res) {
+  const c = db.prepare('SELECT * FROM calls WHERE id = ?').get(req.params.id);
+  if (c && (c.event_id ? T.canAccessEvent(req.user, T.getEvent(c.event_id)) : req.user.platform)) return c;
+  res.status(404).send('Not found');
+  return null;
+}
+r.get('/calls/:id/recording', (req, res) => {
+  const c = loadCall(req, res);
+  if (c) S.sendUpload(res, 'recordings', c.recording_file);
+});
 
 // ---- Team ----
 r.get('/team', (req, res) => {
-  const users = db.prepare('SELECT * FROM users ORDER BY active DESC, name').all();
+  const users = db.prepare('SELECT * FROM users WHERE org_id = ? ORDER BY active DESC, name').all(req.user.org_id);
   const roleSel = (v) => html`<select name="role"><option value="caller" ${v === 'caller' ? 'selected' : ''}>Caller</option><option value="admin" ${v === 'admin' ? 'selected' : ''}>Admin</option></select>`;
   res.send(page(req, 'Team', html`
     <p><a href="/admin">← Weddings</a></p><h1>Team</h1>
     <p class="muted">Each team member logs in with their own email/phone and password. <strong>Callers</strong> see only the caller console; <strong>admins</strong> manage weddings, guests and the team.</p>
-    ${S.teamTable(S.teamStats(null))}
+    ${S.teamTable(S.teamStats(null, T.orgTeam(req.user.org_id)))}
     <h2>Accounts</h2>
     <div class="table-wrap"><table>
       <tr><th>Name</th><th>Login</th><th>Role</th><th>Status</th><th>Change</th></tr>
@@ -425,8 +508,8 @@ r.post('/team', (req, res) => {
   const b = req.body;
   if (!b.name?.trim() || !b.login?.trim() || (b.password || '').length < 6) return back(res, '/admin/team', 'Name, login and a 6+ character password are required');
   try {
-    db.prepare('INSERT INTO users (name, login, role, pass_hash) VALUES (?,?,?,?)')
-      .run(b.name.trim(), b.login.trim(), b.role === 'admin' ? 'admin' : 'caller', hashPassword(b.password));
+    db.prepare('INSERT INTO users (name, login, role, pass_hash, org_id) VALUES (?,?,?,?,?)')
+      .run(b.name.trim(), b.login.trim(), b.role === 'admin' ? 'admin' : 'caller', hashPassword(b.password), req.user.org_id);
   } catch (err) {
     if (/UNIQUE/.test(err.message)) return back(res, '/admin/team', 'That login is already used');
     throw err;
@@ -435,8 +518,9 @@ r.post('/team', (req, res) => {
 });
 
 r.post('/team/:id', (req, res) => {
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  const u = db.prepare('SELECT * FROM users WHERE id = ? AND org_id = ?').get(req.params.id, req.user.org_id);
   if (!u) return res.status(404).send('Not found');
+  if (u.id === req.user.uid && (!req.body.active || req.body.role !== 'admin')) return back(res, '/admin/team', 'You can’t deactivate or demote yourself');
   const b = req.body;
   if (b.password && b.password.length < 6) return back(res, '/admin/team', 'Password must be at least 6 characters');
   db.prepare('UPDATE users SET role = ?, active = ?, pass_hash = COALESCE(?, pass_hash) WHERE id = ?')
@@ -445,7 +529,9 @@ r.post('/team/:id', (req, res) => {
 });
 
 // ---- Recordings uploaded from Android that didn't match a guest ----
-r.get('/unmatched', (req, res) => {
+const platformOnly = (req, res, next) => (req.user.platform ? next() : res.status(404).send('Not found'));
+
+r.get('/unmatched', platformOnly, (req, res) => {
   const calls = db.prepare('SELECT * FROM calls WHERE event_id IS NULL ORDER BY called_at DESC').all();
   res.send(page(req, 'Unmatched recordings', html`
     <p><a href="/admin">← Weddings</a></p><h1>Unmatched recordings</h1>
@@ -458,18 +544,74 @@ r.get('/unmatched', (req, res) => {
     </table></div>` : html`<p class="muted">Nothing here 🎉</p>`}`));
 });
 
-r.post('/calls/:id/rematch', (req, res) => {
-  const c = db.prepare('SELECT * FROM calls WHERE id = ?').get(req.params.id);
-  const g = c && require('./api').findGuestByPhone(c.phone);
+r.post('/calls/:id/rematch', platformOnly, (req, res) => {
+  const c = loadCall(req, res);
+  if (!c) return;
+  const g = require('./api').findGuestByPhone(c.phone);
   if (!g) return back(res, '/admin/unmatched', 'Still no guest with that number');
   db.prepare('UPDATE calls SET guest_id = ?, event_id = ? WHERE id = ?').run(g.id, g.event_id, c.id);
   back(res, '/admin/unmatched', `Matched to ${g.name}`);
 });
 
 r.post('/calls/:id/delete', (req, res) => {
-  const c = db.prepare('SELECT * FROM calls WHERE id = ?').get(req.params.id);
-  if (c) { S.removeUpload('recordings', c.recording_file); db.prepare('DELETE FROM calls WHERE id = ?').run(c.id); }
-  back(res, c?.event_id ? `/admin/events/${c.event_id}` : '/admin/unmatched', 'Deleted');
+  const c = loadCall(req, res);
+  if (!c) return;
+  S.removeUpload('recordings', c.recording_file);
+  db.prepare('DELETE FROM calls WHERE id = ?').run(c.id);
+  back(res, c.event_id ? `/admin/events/${c.event_id}` : '/admin/unmatched', 'Deleted');
+});
+
+// ---- Candid Dulhan's view of the whole platform: partner companies, adoption and the service pipeline ----
+r.get('/platform', platformOnly, (req, res) => {
+  const orgs = db.prepare(`SELECT o.*,
+      (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND u.active = 1) users,
+      (SELECT COUNT(*) FROM events e WHERE e.org_id = o.id) weddings,
+      (SELECT COUNT(*) FROM guests g JOIN events e ON e.id = g.event_id WHERE e.org_id = o.id) guests,
+      (SELECT COUNT(*) FROM events e WHERE e.org_id = o.id AND e.service_status = 'active') services,
+      (SELECT MAX(a.created_at) FROM activities a JOIN events e ON e.id = a.event_id WHERE e.org_id = o.id) last_active
+    FROM orgs o WHERE o.is_platform = 0 ORDER BY o.created_at DESC`).all();
+  const pipeline = db.prepare(`SELECT e.*, o.name org_name, o.contact_name, o.phone org_phone,
+      (SELECT COUNT(*) FROM guests g WHERE g.event_id = e.id) guests
+    FROM events e JOIN orgs o ON o.id = e.org_id WHERE o.is_platform = 0 AND e.service_status IN ('requested', 'active')
+    ORDER BY e.service_status = 'requested' DESC, e.service_updated_at DESC`).all();
+  const tot = orgs.reduce((t, o) => ({ weddings: t.weddings + o.weddings, guests: t.guests + o.guests, services: t.services + o.services }),
+    { weddings: 0, guests: 0, services: 0 });
+  const requested = pipeline.filter((e) => e.service_status === 'requested').length;
+  const stat = (v, l) => html`<div class="stat"><div class="stat-v">${v}</div><div class="stat-l">${l}</div></div>`;
+  res.send(page(req, 'Platform', html`
+    <p><a href="/admin">← Weddings</a></p><h1>Platform dashboard</h1>
+    <p class="muted">Event companies using the free software, and the weddings where they want your RSVP desk. Companies sign up at <code>/signup</code>.</p>
+    <section class="stats">${stat(orgs.length, 'Partner companies')}${stat(tot.weddings, 'Their weddings')}${stat(tot.guests, 'Guests on platform')}
+      ${stat(requested, 'Service requests')}${stat(tot.services, 'Active services')}</section>
+    <h2>RSVP desk pipeline</h2>
+    ${pipeline.length ? html`<div class="table-wrap"><table>
+      <tr><th>Wedding</th><th>Company</th><th>Guests</th><th>Brief</th><th>Status</th><th></th></tr>
+      ${pipeline.map((e) => html`<tr>
+        <td><strong>${e.title}</strong><br><small class="muted">${[fmtDate(e.event_date), e.city].filter(Boolean).join(' · ')}</small></td>
+        <td>${e.org_name}<br><small class="muted">${[e.contact_name, e.org_phone].filter(Boolean).join(' · ')}</small></td>
+        <td>${e.guests}</td><td class="notes">${e.service_note || ''}</td>
+        <td><span class="badge svc-${e.service_status}">${T.SERVICE_LABEL[e.service_status]}</span><br><small class="muted">${fmtDate(e.service_updated_at)}</small></td>
+        <td class="nowrap">${e.service_status === 'requested' ? html`
+          <form method="post" action="/admin/platform/events/${e.id}" class="inline"><button name="action" value="accept" class="primary sm">Accept</button></form>
+          <form method="post" action="/admin/platform/events/${e.id}" class="inline" data-confirm="Decline this request?"><button name="action" value="decline" class="danger sm">Decline</button></form>`
+          : html`<a class="btn sm" href="/admin/events/${e.id}">Open</a>`}</td>
+      </tr>`)}</table></div>` : html`<p class="muted">No requests yet.</p>`}
+    <h2>Partner companies</h2>
+    ${orgs.length ? html`<div class="table-wrap"><table>
+      <tr><th>Company</th><th>Contact</th><th>City</th><th>Team</th><th>Weddings</th><th>Guests</th><th>Using RSVP desk</th><th>Joined</th><th>Last active</th></tr>
+      ${orgs.map((o) => html`<tr><td><strong>${o.name}</strong></td><td>${o.contact_name || ''}<br><small class="muted">${[o.phone, o.email].filter(Boolean).join(' · ')}</small></td>
+        <td>${o.city || ''}</td><td>${o.users}</td><td>${o.weddings}</td><td>${o.guests}</td><td>${o.services}</td>
+        <td>${fmtDate(o.created_at)}</td><td>${o.last_active ? fmtDate(o.last_active) : html`<span class="muted">—</span>`}</td></tr>`)}
+    </table></div>` : html`<p class="muted">No companies have signed up yet. Share <code>${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}/signup</code> with event companies.</p>`}`));
+});
+
+r.post('/platform/events/:id', platformOnly, (req, res) => {
+  const e = T.getEvent(req.params.id);
+  if (!e || e.service_status !== 'requested') return back(res, '/admin/platform', 'That request is no longer pending');
+  const accept = req.body.action === 'accept';
+  db.prepare("UPDATE events SET service_status = ?, service_updated_at = datetime('now') WHERE id = ?").run(accept ? 'active' : 'declined', e.id);
+  S.logActivity(e.id, null, req.user.name, 'service', accept ? 'Candid Dulhan RSVP desk accepted — service is active' : 'RSVP desk request declined');
+  back(res, accept ? `/admin/events/${e.id}` : '/admin/platform', accept ? `Service active — ${e.title} is now in your partner weddings` : 'Declined');
 });
 
 module.exports = r;

@@ -1,7 +1,7 @@
 const path = require('node:path');
 const express = require('express');
 const config = require('./config');
-require('./db');
+const db = require('./db');
 const auth = require('./auth');
 const layout = require('./layout');
 const { html } = require('./util');
@@ -30,7 +30,46 @@ const loginPage = (req, error) => layout({ title: 'Log in', user: null, body: ht
     <details><summary class="muted small">Using the owner / shared password?</summary>
       <label>Your name <small>(shown on call logs)</small><input name="name" autocomplete="name"></label></details>
     <button class="primary">Log in</button>
+    <p class="muted small center">Event management company? <a href="/signup">Create a free account</a></p>
   </form>` });
+
+// Free self-serve accounts for event-management companies.
+const signupPage = (req, error, b = {}) => layout({ title: 'Create free account', user: null, body: html`
+  <form method="post" action="/signup" class="form card login signup">
+    <p class="eyebrow">Free for event companies</p>
+    <h1>Guest management for your weddings</h1>
+    <p class="muted small">WhatsApp invites, RSVPs, travel &amp; ID collection, your own calling team, and a live dashboard for every client — free. Need extra hands? Hire the Candid Dulhan RSVP desk for any wedding.</p>
+    ${error ? html`<div class="flash warn">${error}</div>` : ''}
+    <label>Company name<input name="company" required value="${b.company || ''}" placeholder="Royal Knot Events"></label>
+    <div class="row"><label>Your name<input name="name" required value="${b.name || ''}" autocomplete="name"></label>
+      <label>City<input name="city" value="${b.city || ''}" placeholder="Jaipur"></label></div>
+    <div class="row"><label>Mobile<input name="phone" required inputmode="tel" value="${b.phone || ''}" autocomplete="tel"></label>
+      <label>Email<input type="email" name="email" value="${b.email || ''}" autocomplete="email"></label></div>
+    <label>Password <small>(6+ characters)</small><input type="password" name="password" required minlength="6" autocomplete="new-password"></label>
+    <p class="muted small">You’ll log in with your email (or mobile if you leave email empty).</p>
+    <button class="primary big">Create free account</button>
+    <p class="muted small center">Already have an account? <a href="/login">Log in</a></p>
+  </form>` });
+
+app.get('/signup', (req, res) => res.send(signupPage(req)));
+app.post('/signup', (req, res) => {
+  const b = req.body;
+  const clean = (v, n = 120) => String(v || '').trim().slice(0, n);
+  const company = clean(b.company), name = clean(b.name, 60), phone = clean(b.phone, 20), email = clean(b.email).toLowerCase();
+  if (!company || !name || !phone || String(b.password || '').length < 6) return res.status(400).send(signupPage(req, 'Please fill company, name, mobile and a 6+ character password.', b));
+  const login = email || phone;
+  if (db.prepare('SELECT 1 FROM users WHERE login = ?').get(login)) return res.status(400).send(signupPage(req, 'An account with that email/mobile already exists — log in instead.', b));
+  let uid;
+  db.exec('BEGIN');
+  try {
+    const org = db.prepare('INSERT INTO orgs (name, contact_name, phone, email, city) VALUES (?,?,?,?,?)').run(company, name, phone, email || null, clean(b.city, 60) || null);
+    uid = Number(db.prepare("INSERT INTO users (name, login, role, pass_hash, org_id) VALUES (?,?, 'admin', ?,?)")
+      .run(name, login, auth.hashPassword(b.password), org.lastInsertRowid).lastInsertRowid);
+    db.exec('COMMIT');
+  } catch (err) { db.exec('ROLLBACK'); throw err; }
+  auth.login(res, { uid, role: 'admin', name });
+  res.redirect('/admin?msg=' + encodeURIComponent(`Welcome, ${name}! Create your first wedding below.`));
+});
 
 app.get('/login', (req, res) => res.send(loginPage(req)));
 app.post('/login', (req, res) => {

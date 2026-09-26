@@ -49,9 +49,10 @@ function authenticate(login, password, name) {
   if (!password) return null;
   const u = login && db.prepare('SELECT * FROM users WHERE login = ? AND active = 1').get(String(login).trim());
   if (u) return checkPassword(password, u.pass_hash) ? { uid: u.id, role: u.role, name: u.name } : null;
+  // Owner / shared passwords always sign in to the Candid Dulhan (platform) workspace.
   const fallback = (name || login || '').trim().slice(0, 40);
-  if (safeEqual(password, config.adminPassword)) return { uid: null, role: 'admin', name: fallback || 'Admin' };
-  if (config.callerPassword && safeEqual(password, config.callerPassword)) return { uid: null, role: 'caller', name: fallback || 'Caller' };
+  if (safeEqual(password, config.adminPassword)) return { uid: null, role: 'admin', name: fallback || 'Admin', org_id: db.platformOrgId };
+  if (config.callerPassword && safeEqual(password, config.callerPassword)) return { uid: null, role: 'caller', name: fallback || 'Caller', org_id: db.platformOrgId };
   return null;
 }
 
@@ -76,9 +77,13 @@ function session(req, _res, next) {
         if (data.exp > Date.now()) {
           if (data.uid) {
             // Re-check the account so deactivation / role changes take effect immediately.
-            const u = db.prepare('SELECT id, name, role FROM users WHERE id = ? AND active = 1').get(data.uid);
-            if (u) req.user = { uid: u.id, role: u.role, name: u.name };
-          } else req.user = data;
+            const u = db.prepare(`SELECT u.id, u.name, u.role, u.org_id, o.name org_name, o.is_platform
+              FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.id = ? AND u.active = 1`).get(data.uid);
+            if (u) req.user = { uid: u.id, role: u.role, name: u.name, org_id: u.org_id, org_name: u.org_name, platform: !!u.is_platform };
+          } else {
+            const o = db.prepare('SELECT name FROM orgs WHERE id = ?').get(db.platformOrgId);
+            req.user = { uid: null, role: data.role, name: data.name, org_id: db.platformOrgId, org_name: o.name, platform: true };
+          }
         }
       } catch {}
     }

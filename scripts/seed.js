@@ -10,28 +10,45 @@ const ahead = (hours) => ago(-hours);
 
 db.exec('BEGIN');
 try {
-  const team = [
-    ['Neha', 'neha@demo.in', 'caller'],
-    ['Ravi', 'ravi@demo.in', 'caller'],
-    ['Priya', 'priya@demo.in', 'admin'],
-  ].map(([name, login, role]) => {
+  // A partner event company using the free software…
+  const partner = db.prepare("SELECT id FROM orgs WHERE name = 'Royal Knot Events (Demo)'").get()?.id
+    ?? Number(db.prepare(`INSERT INTO orgs (name, contact_name, phone, email, city) VALUES
+      ('Royal Knot Events (Demo)', 'Meera Jain', '9829000000', 'meera@royalknot.demo', 'Jaipur')`).run().lastInsertRowid);
+  const user = (name, login, role, orgId) => {
     const found = db.prepare('SELECT id FROM users WHERE login = ?').get(login);
     if (found) return { id: found.id, name };
-    const info = db.prepare('INSERT INTO users (name, login, role, pass_hash) VALUES (?,?,?,?)').run(name, login, role, hashPassword('demo123'));
+    const info = db.prepare('INSERT INTO users (name, login, role, pass_hash, org_id) VALUES (?,?,?,?,?)').run(name, login, role, hashPassword('demo123'), orgId);
     return { id: Number(info.lastInsertRowid), name };
-  });
+  };
+  user('Meera', 'meera@royalknot.demo', 'admin', partner);
+  // …and Candid Dulhan's own RSVP-desk team, working on the partner's wedding.
+  const team = [
+    user('Neha', 'neha@demo.in', 'caller', db.platformOrgId),
+    user('Ravi', 'ravi@demo.in', 'caller', db.platformOrgId),
+    user('Priya', 'priya@demo.in', 'admin', db.platformOrgId),
+  ];
 
   const clientToken = token(18);
-  const event = db.prepare(`INSERT INTO events (title, client_name, client_phone, event_date, venue, city, welcome_note,
-    require_id, collect_travel, client_token) VALUES (?,?,?,?,?,?,?,1,1,?)`).run(
-    'Aarav & Diya (Demo)', 'Mrs. Sunita Sharma', '9876500000', '2026-12-12', 'The Leela Palace', 'Udaipur',
-    'With the blessings of our families, we would be honoured by your presence as we begin our journey together.', clientToken);
-  const eventId = Number(event.lastInsertRowid);
-
   const log = db.prepare('INSERT INTO activities (event_id, guest_id, actor, kind, detail, created_at) VALUES (?,?,?,?,?,?)');
+  const event = db.prepare(`INSERT INTO events (title, client_name, client_phone, event_date, venue, city, welcome_note,
+    require_id, collect_travel, client_token, org_id, service_status, service_note, service_updated_at) VALUES (?,?,?,?,?,?,?,1,1,?,?, 'active', ?, datetime('now', '-4 days'))`).run(
+    'Aarav & Diya (Demo)', 'Mrs. Sunita Sharma', '9876500000', '2026-12-12', 'The Leela Palace', 'Udaipur',
+    'With the blessings of our families, we would be honoured by your presence as we begin our journey together.', clientToken,
+    partner, '~450 guests, Hindi calls, all RSVPs by 20 Nov, rooming list for 2 hotels');
+  const eventId = Number(event.lastInsertRowid);
+  // A second partner wedding that has just asked for the RSVP desk (shows up in the platform pipeline).
+  const second = Number(db.prepare(`INSERT INTO events (title, event_date, venue, city, client_token, org_id, service_status, service_note, service_updated_at)
+    VALUES ('Kabir & Ananya (Demo)', '2027-01-20', 'Rambagh Palace', 'Jaipur', ?, ?, 'requested', '~300 guests, need calling + ID collection, deadline 5 Jan', datetime('now', '-2 hours'))`)
+    .run(token(18), partner).lastInsertRowid);
+  ['Nikhil Arora', 'Simran Kaur', 'Tarun Goyal'].forEach((n, i) => db.prepare('INSERT INTO guests (event_id, name, phone, max_pax, token) VALUES (?,?,?,2,?)')
+    .run(second, n, `97${String(20000000 + i * 3456789).slice(0, 8)}`, token()));
+  log.run(eventId, null, 'Meera', 'service', 'Requested the Candid Dulhan RSVP desk', ago(100));
+  log.run(eventId, null, 'Priya', 'service', 'Candid Dulhan RSVP desk accepted — service is active', ago(98));
+
+
   const call = db.prepare(`INSERT INTO calls (event_id, guest_id, phone, caller, user_id, outcome, notes, duration_sec, source, called_at)
     VALUES (?,?,?,?,?,?,?,?, 'console', ?)`);
-  log.run(eventId, null, 'Priya', 'import', 'Imported 24 guests from CSV', ago(96));
+  log.run(eventId, null, 'Meera', 'import', 'Imported 24 guests from CSV', ago(96));
 
   // name, side, group, max_pax, status, pax, arrival, mode, stay, dietary, id, owner(0/1/null), followUpHours
   const guests = [
@@ -72,7 +89,7 @@ try {
       pax, arrival, mode, stay, dietary, responded, idType, idType ? String(400000000000 + i * 7919) : null, idType ? responded : null,
       assignee?.id ?? null, followUp == null ? null : ahead(followUp));
     const gid = Number(info.lastInsertRowid);
-    log.run(eventId, gid, 'Priya', 'invite', 'WhatsApp invite sent', invitedAt);
+    log.run(eventId, gid, 'Meera', 'invite', 'WhatsApp invite sent', invitedAt);
     if (assignee) log.run(eventId, gid, 'Priya', 'assign', `Assigned to ${assignee.name} (auto-split)`, ago(80));
     if (status !== 'pending' && i % 3 !== 2) {
       log.run(eventId, gid, 'Guest', 'rsvp', `RSVP received: ${{ yes: 'Attending', no: 'Declined', maybe: 'Maybe' }[status]}${pax ? ` (${pax} ${pax === 1 ? 'person' : 'people'})` : ''}`, responded);
@@ -89,12 +106,14 @@ try {
   db.exec('COMMIT');
 
   console.log(`
-Demo wedding created: Aarav & Diya (Demo) — ${guests.length} guests
+Demo data created (password for every login: demo123)
 
-Team logins (password: demo123)
-  Admin : priya@demo.in
-  Caller: neha@demo.in
-  Caller: ravi@demo.in
+Partner event company: Royal Knot Events (Demo)
+  Admin : meera@royalknot.demo   — owns "Aarav & Diya" (RSVP desk active) and "Kabir & Ananya" (RSVP desk requested)
+
+Candid Dulhan (you)
+  Admin : priya@demo.in           — platform dashboard, accepts service requests
+  Caller: neha@demo.in, ravi@demo.in — work the partner wedding
   Owner : leave "Email or phone" empty, use ADMIN_PASSWORD
 
 Client dashboard: /c/${clientToken}

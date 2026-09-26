@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const multer = require('multer');
 const db = require('./db');
+const T = require('./tenancy');
 const config = require('./config');
 const { html, token, normPhone, maskId, fmtDate, fmtDuration, toCsv } = require('./util');
 
@@ -147,11 +148,12 @@ function listGuests(eventId, filter = {}) {
     ORDER BY CASE g.rsvp_status WHEN 'pending' THEN 0 WHEN 'maybe' THEN 1 WHEN 'yes' THEN 2 ELSE 3 END, g.name`).all(...args);
 }
 
-const teamMembers = () => db.prepare('SELECT id, name, role FROM users WHERE active = 1 ORDER BY name').all();
+// People who can be assigned guests on this wedding (see tenancy.eventTeam).
+const teamMembers = (eventId) => T.eventTeam(T.getEvent(eventId));
 
 // crm: show team-only controls (owner, follow-up due). Off for the client dashboard.
 function filterBar(eventId, filter, { me, crm } = {}) {
-  const team = crm ? teamMembers() : [];
+  const team = crm ? teamMembers(eventId) : [];
   const sides = db.prepare("SELECT DISTINCT side FROM guests WHERE event_id = ? AND side IS NOT NULL AND side != '' ORDER BY 1").all(eventId);
   return html`<form class="filters" method="get">
     <input type="search" name="q" value="${filter.q || ''}" placeholder="Search name, phone, group">
@@ -190,7 +192,7 @@ function callsTable(calls, recUrl) {
 const eventCalls = (eventId, limit = 200) => db.prepare(`SELECT c.*, g.name guest_name FROM calls c
   LEFT JOIN guests g ON g.id = c.guest_id WHERE c.event_id = ? ORDER BY c.called_at DESC LIMIT ?`).all(eventId, limit);
 
-const ACTIVITY_ICON = { invite: '✉️', rsvp: '✅', id: '🪪', call: '📞', note: '📝', assign: '👤', import: '⇪', followup: '⏰' };
+const ACTIVITY_ICON = { invite: '✉️', rsvp: '✅', id: '🪪', call: '📞', note: '📝', assign: '👤', import: '⇪', followup: '⏰', service: '🤝' };
 
 function logActivity(eventId, guestId, actor, kind, detail) {
   db.prepare('INSERT INTO activities (event_id, guest_id, actor, kind, detail) VALUES (?,?,?,?,?)')
@@ -208,8 +210,9 @@ function timeline(items, { showGuest } = {}) {
 
 const guestTimeline = (guestId) => db.prepare('SELECT * FROM activities WHERE guest_id = ? ORDER BY created_at DESC, id DESC LIMIT 100').all(guestId);
 
-// Per-team-member progress for a wedding (or all weddings when eventId is null).
-function teamStats(eventId) {
+// Per-team-member progress for the given users, on one wedding (eventId) or across all their weddings (null).
+function teamStats(eventId, users) {
+  if (!users.length) return [];
   const scope = eventId ? 'AND g.event_id = ?' : '';
   const cscope = eventId ? 'AND c.event_id = ?' : '';
   const a = eventId ? [eventId] : [];
@@ -222,7 +225,8 @@ function teamStats(eventId) {
       (SELECT COUNT(*) FROM calls c WHERE c.user_id = u.id AND date(c.called_at, '+5 hours', '+30 minutes') = date('now', '+5 hours', '+30 minutes') ${cscope}) today,
       (SELECT COUNT(*) FROM guests g WHERE g.assigned_to = u.id AND g.follow_up_at IS NOT NULL
          AND g.follow_up_at <= datetime('now') ${scope}) overdue
-    FROM users u WHERE u.active = 1 ORDER BY u.name`).all(...a, ...a, ...a, ...a, ...a, ...a, ...a);
+    FROM users u WHERE u.id IN (${users.map(() => '?').join(',')}) ORDER BY u.name`)
+    .all(...a, ...a, ...a, ...a, ...a, ...a, ...a, ...users.map((u) => u.id));
 }
 
 function teamTable(rows) {
