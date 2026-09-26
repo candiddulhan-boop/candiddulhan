@@ -8,11 +8,12 @@ const S = require('../shared');
 const T = require('../tenancy');
 const W = require('../wedding');
 const F = require('../fields');
+const V = require('../vault');
 
 const r = express.Router();
 r.use(requireRole('admin'));
 
-const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 const getEvent = T.getEvent;
 const back = (res, url, msg) => res.redirect(`${url}${msg ? `${url.includes('?') ? '&' : '?'}msg=${encodeURIComponent(msg)}` : ''}`);
@@ -35,6 +36,13 @@ function eventForm(e = {}) {
     <textarea name="invite_message" rows="6">${e.invite_message || S.DEFAULT_INVITE}</textarea></label>
   <label class="check"><input type="checkbox" name="require_id" value="1" ${e.require_id ?? 1 ? 'checked' : ''}> Collect government ID from attending guests (for hotel check-in / venue security)</label>
   <label class="check"><input type="checkbox" name="collect_travel" value="1" ${e.collect_travel ?? 1 ? 'checked' : ''}> Collect arrival, departure &amp; stay details</label>
+  <fieldset><legend>ID documents</legend>
+    <p class="muted small">Every attending adult is asked for one government ID for check-in. Tick any extra documents you also need (e.g. PAN for foreign-exchange or airline bookings).
+      Aadhaar numbers are always stored masked (last 4 digits); all ID photos are encrypted.</p>
+    ${V.DOC_TYPES.filter((t) => t !== 'Other').map((t) => html`<label class="check inline-check"><input type="checkbox" name="extra_docs" value="${t}" ${V.extraDocTypes(e).includes(t) ? 'checked' : ''}> ${t}</label>`)}
+    <label>Auto-delete all IDs this many days after the wedding <small>(recommended 30; empty = keep until deleted manually)</small>
+      <input type="number" name="id_retention_days" min="1" max="3650" value="${e.id_retention_days ?? ''}" placeholder="30"></label>
+  </fieldset>
   <label>Client dashboard PIN <small>(optional — the client must enter it once per device; leave blank for link-only access)</small>
     <input name="client_pin" inputmode="numeric" maxlength="12" value="${e.client_pin || ''}" autocomplete="off"></label>`;
 }
@@ -42,6 +50,12 @@ function eventForm(e = {}) {
 const eventFields = (b) => [b.title?.trim(), b.client_name || null, b.client_phone || null, b.event_date || null,
   b.venue || null, b.city || null, b.invite_message || null, b.welcome_note || null, b.require_id ? 1 : 0, b.collect_travel ? 1 : 0,
   b.client_pin?.trim() || null];
+
+function saveIdSettings(eventId, b) {
+  const docs = [].concat(b.extra_docs || []).filter((t) => V.DOC_TYPES.includes(t));
+  const days = parseInt(b.id_retention_days, 10);
+  db.prepare('UPDATE events SET extra_docs = ?, id_retention_days = ? WHERE id = ?').run(docs.join(',') || null, days > 0 ? days : null, eventId);
+}
 
 // ---- Weddings list ----
 const eventCards = (events, { partner } = {}) => html`<div class="cards">${events.map((e) => html`
@@ -64,7 +78,7 @@ r.get('/', (req, res) => {
   const requests = u.platform ? db.prepare("SELECT COUNT(*) n FROM events WHERE service_status = 'requested'").get().n : 0;
   const unmatched = u.platform ? db.prepare('SELECT COUNT(*) n FROM calls WHERE event_id IS NULL').get().n : 0;
   res.send(page(req, 'Weddings', html`
-    <div class="head"><h1>Weddings</h1>${u.platform ? html`<div class="actions"><a class="btn" href="/admin/platform">Platform dashboard</a></div>` : ''}</div>
+    <div class="head"><h1>Weddings</h1>${u.platform ? html`<div class="actions"><a class="btn" href="/admin/platform">Platform dashboard</a><a class="btn" href="/admin/whatsapp">WhatsApp setup</a></div>` : ''}</div>
     ${requests ? html`<p class="flash"><a href="/admin/platform">🤝 ${requests} wedding${requests === 1 ? '' : 's'} requested the Candid Dulhan RSVP desk →</a></p>` : ''}
     ${unmatched ? html`<p class="flash warn"><a href="/admin/unmatched">${unmatched} call recording${unmatched === 1 ? '' : 's'} could not be matched to a guest →</a></p>` : ''}
     ${own.length ? eventCards(own) : html`<p class="muted">No weddings yet. Create your first one below.</p>`}
@@ -81,6 +95,7 @@ r.post('/events', (req, res) => {
   const info = db.prepare(`INSERT INTO events (title, client_name, client_phone, event_date, venue, city, invite_message,
     welcome_note, require_id, collect_travel, client_pin, client_token, org_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(...eventFields(req.body), token(18), req.user.org_id);
+  saveIdSettings(info.lastInsertRowid, req.body);
   back(res, `/admin/events/${info.lastInsertRowid}`, 'Wedding created. Add guests below.');
 });
 
@@ -134,11 +149,13 @@ r.get('/events/:id', (req, res) => {
           <button class="primary">Add guest</button>
         </form>
       </details>
-      <details class="card"><summary><strong>⇪ Import guests from CSV</strong></summary>
+      <details class="card"><summary><strong>⇪ Bulk upload guests (Excel or CSV)</strong></summary>
         <form method="post" action="/admin/events/${e.id}/import" enctype="multipart/form-data" class="form">
-          <p class="muted">Header row required. Basic columns: <code>name, phone, side, group, max_pax, email</code>. Optional: any guest field by name (e.g. <code>relation, city, category, arrival date, room type</code>) and <code>functions</code> (e.g. “Sangeet, Wedding”; empty = all). Guests with a phone already on the list are skipped.</p>
-          <input type="file" name="file" accept=".csv,text/csv" required>
-          <button class="primary">Import</button>
+          <p class="muted">Upload your whole guest list at once — names, mobiles, family members, functions, travel, hotel, food and more.
+            <a href="/admin/events/${e.id}/import-template.xlsx">⬇ Download the Excel template</a> (has dropdowns and examples).</p>
+          <input type="file" name="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+          <label class="check"><input type="checkbox" name="update" value="1" checked> Update guests already on the list (matched by mobile) — empty cells keep saved values</label>
+          <button class="primary">Upload</button>
         </form>
       </details>
     </div>
@@ -159,10 +176,15 @@ r.get('/events/:id', (req, res) => {
       <button name="mode" value="invite_fn">Invite to function</button>
       <button name="mode" value="uninvite_fn">Remove from function</button>
     </div>` : ''}
+    <div class="bulkbar">
+      <span><strong data-selcount>0</strong> selected</span>
+      <select name="wa_purpose"><option value="">WhatsApp message…</option>${Object.entries(require('../whatsapp').TEMPLATES).filter(([, t]) => t.params).map(([k, t]) => html`<option value="${k}">${t.label}</option>`)}</select>
+      <button name="mode" value="wa" data-confirm-click="Send this WhatsApp message to the selected guests?">💬 Send to selected</button>
+    </div>
     <div class="table-wrap"><table class="guests">
-      <tr>${team.length || fns.length ? html`<th><input type="checkbox" data-selall aria-label="Select all"></th>` : ''}<th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls / follow-up</th><th>Owner</th><th>Invite</th></tr>
+      <tr>${html`<th><input type="checkbox" data-selall aria-label="Select all"></th>`}<th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls / follow-up</th><th>Owner</th><th>Invite</th></tr>
       ${guests.map((g) => html`<tr>
-        ${team.length || fns.length ? html`<td><input type="checkbox" name="guest_ids" value="${g.id}" data-sel></td>` : ''}
+        <td><input type="checkbox" name="guest_ids" value="${g.id}" data-sel></td>
         <td><a href="/admin/guests/${g.id}"><strong>${g.name}</strong></a><br><small class="muted">${g.phone || ''}</small></td>
         <td>${g.side || ''}<br><small class="muted">${g.group_name || ''}</small></td>
         <td>${S.badge(g.rsvp_status)}${fns.length ? html`<br>${W.functionChips(fns, answers.get(g.id))}` : ''}</td>
@@ -249,9 +271,22 @@ r.post('/events/:id/service', (req, res) => {
   back(res, `/admin/events/${e.id}`, 'Updated');
 });
 
-r.post('/events/:id/assign', (req, res) => {
+r.post('/events/:id/assign', async (req, res, next) => {
   const e = T.loadEvent(req, res, req.params.id);
   if (!e) return;
+  if (req.body.mode === 'wa') {
+    const WA = require('../whatsapp');
+    const ew = WA.eventWithOrg(e.id);
+    const purpose = req.body.wa_purpose;
+    if (!WA.TEMPLATES[purpose]?.params) return back(res, `/admin/events/${e.id}`, 'Choose a WhatsApp message');
+    if (!WA.canSend(ew)) return back(res, `/admin/events/${e.id}`, 'Bulk WhatsApp needs the Candid Dulhan RSVP desk for this wedding');
+    const guests = WA.audienceGuests(e.id, 'selected', req.body.guest_ids);
+    if (!guests.length) return back(res, `/admin/events/${e.id}`, 'Select guests with a mobile number');
+    try {
+      const r2 = await WA.runCampaign(e.id, purpose, guests, { who: req.user.name, audience: 'selected' });
+      return back(res, `/admin/events/${e.id}`, `WhatsApp ${WA.live() ? 'sent' : '(test mode)'} to ${r2.sent} guest${r2.sent === 1 ? '' : 's'}${r2.failed ? `, ${r2.failed} failed` : ''}`);
+    } catch (err) { return next(err); }
+  }
   const team = T.eventTeam(e);
   const byId = new Map(team.map((u) => [u.id, u]));
   const setOwner = db.prepare('UPDATE guests SET assigned_to = ? WHERE id = ? AND event_id = ?');
@@ -315,7 +350,9 @@ r.get('/events/:id/settings', (req, res) => {
     <h1>${e.title}</h1>${W.eventNav(e, 'settings', { owner: true })}
     <form method="post" action="/admin/events/${e.id}/settings" class="form card">${eventForm(e)}
       <label class="check"><input type="checkbox" name="rotate_client_link" value="1"> Generate a new client dashboard link (the old link stops working)</label>
-      <button class="primary">Save</button></form>`));
+      <button class="primary">Save</button></form>
+    <form method="post" action="/admin/events/${e.id}/purge-ids" class="card danger-zone left" data-confirm="Permanently delete every ID photo and ID number for this wedding? This cannot be undone.">
+      <strong>Privacy:</strong> delete all ID documents for this wedding now (e.g. once check-in is done). <button class="danger sm">Delete all IDs</button></form>`));
 });
 
 r.post('/events/:id/settings', (req, res) => {
@@ -325,6 +362,7 @@ r.post('/events/:id/settings', (req, res) => {
   db.prepare(`UPDATE events SET title=?, client_name=?, client_phone=?, event_date=?, venue=?, city=?, invite_message=?,
     welcome_note=?, require_id=?, collect_travel=?, client_pin=?, client_token=? WHERE id=?`)
     .run(...eventFields(req.body), req.body.rotate_client_link ? token(18) : e.client_token, e.id);
+  saveIdSettings(e.id, req.body);
   back(res, `/admin/events/${e.id}`, 'Saved');
 });
 
@@ -333,7 +371,7 @@ r.post('/events/:id/delete', (req, res) => {
   if (!e) return;
   if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   for (const g of db.prepare('SELECT id_file FROM guests WHERE event_id = ?').all(e.id)) S.removeUpload('ids', g.id_file);
-  for (const m of db.prepare('SELECT m.id_file FROM guest_members m JOIN guests g ON g.id = m.guest_id WHERE g.event_id = ?').all(e.id)) S.removeUpload('ids', m.id_file);
+  V.purgeEvent(e.id);
   for (const c of db.prepare('SELECT recording_file FROM calls WHERE event_id = ?').all(e.id)) S.removeUpload('recordings', c.recording_file);
   db.prepare('DELETE FROM events WHERE id = ?').run(e.id);
   back(res, '/admin', `Deleted ${e.title}`);
@@ -363,51 +401,33 @@ r.post('/events/:id/guests', (req, res) => {
   back(res, `/admin/events/${e.id}`, `Added ${b.name.trim()}`);
 });
 
-r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
+r.post('/events/:id/import', csvUpload.single('file'), async (req, res, next) => {
   const e = T.loadEvent(req, res, req.params.id);
   if (!e) return;
-  if (!req.file) return back(res, `/admin/events/${e.id}`, 'Choose a CSV file');
-  const rows = parseCsv(req.file.buffer.toString('utf8'));
-  if (rows.length < 2) return back(res, `/admin/events/${e.id}`, 'CSV is empty');
-  const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]/g, ''));
-  const col = (...names) => head.findIndex((h) => names.includes(h));
-  const ix = {
-    name: col('name', 'guestname', 'fullname'), phone: col('phone', 'mobile', 'whatsapp', 'phonenumber', 'contact'),
-    email: col('email'), side: col('side'), group: col('group', 'groupname', 'category', 'relation'),
-    pax: col('maxpax', 'pax', 'people', 'count', 'guests', 'members'),
-  };
-  if (ix.name < 0) return back(res, `/admin/events/${e.id}`, 'CSV needs a "name" column');
-  // Any other column whose header matches a built-in field label or key is imported too.
-  const norm = (x) => x.toLowerCase().replace(/[^a-z]/g, '');
-  const extra = F.GUEST_FIELDS.filter((f) => !['name', 'phone', 'email', 'side', 'group_name', 'max_pax', 'hotel_id'].includes(f.key))
-    .map((f) => [f, head.findIndex((h) => h === norm(f.key) || h === norm(f.label))]).filter(([, i]) => i >= 0);
-  const fnCol = col('functions', 'invitedto', 'events');
-  const fns = W.functionsOf(e.id);
-  const existing = new Set(db.prepare('SELECT phone FROM guests WHERE event_id = ? AND phone IS NOT NULL').all(e.id)
-    .map((g) => g.phone.replace(/\D/g, '').slice(-10)));
-  let added = 0, skipped = 0;
-  const get = (row, i) => (i >= 0 ? (row[i] || '').trim() : '');
-  db.exec('BEGIN');
+  if (!req.file) return back(res, `/admin/events/${e.id}`, 'Choose an Excel or CSV file');
   try {
-    for (const row of rows.slice(1)) {
-      const name = get(row, ix.name), phone = get(row, ix.phone);
-      const key = phone.replace(/\D/g, '').slice(-10);
-      if (!name || (key && existing.has(key))) { skipped++; continue; }
-      if (key) existing.add(key);
-      const side = get(row, ix.side);
-      const gid = Number(insertGuest.run(e.id, name, phone || null, get(row, ix.email) || null,
-        /^b/i.test(side) ? 'Bride' : /^g/i.test(side) ? 'Groom' : side || null,
-        get(row, ix.group) || null, Math.max(1, parseInt(get(row, ix.pax), 10) || 1), token()).lastInsertRowid);
-      if (extra.length) F.update(gid, F.parse(Object.fromEntries(extra.map(([f, i]) => [f.key, f.options === F.FIELD.needs_stay.options
-        ? ({ yes: '1', y: '1', no: '0', n: '0' }[get(row, i).toLowerCase()] ?? '') : get(row, i)])), extra.map(([f]) => f.key)));
-      const wanted = fnCol >= 0 && get(row, fnCol) ? get(row, fnCol).toLowerCase().split(/[,;/]/).map((x) => x.trim()) : null;
-      W.inviteGuest(gid, fns.filter((f) => !wanted || wanted.includes(f.name.toLowerCase())).map((f) => f.id));
-      added++;
-    }
-    if (added) S.logActivity(e.id, null, req.user.name, 'import', `Imported ${added} guest${added === 1 ? '' : 's'} from CSV`);
-    db.exec('COMMIT');
-  } catch (err) { db.exec('ROLLBACK'); throw err; }
-  back(res, `/admin/events/${e.id}`, `Imported ${added} guest${added === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (blank or duplicate)` : ''}`);
+    const r2 = await require('../importer').importGuests(e, req.file, { update: !!req.body.update, who: req.user.name });
+    if (r2.error) return back(res, `/admin/events/${e.id}`, r2.error);
+    const parts = [`${r2.added} added`, `${r2.updated} updated`];
+    if (r2.members) parts.push(`${r2.members} family members`);
+    if (r2.hotelsCreated) parts.push(`${r2.hotelsCreated} new hotels`);
+    if (r2.skipped.length) parts.push(`${r2.skipped.length} skipped — ${r2.skipped.slice(0, 3).join('; ')}${r2.skipped.length > 3 ? '…' : ''}`);
+    back(res, `/admin/events/${e.id}`, `Bulk upload done: ${parts.join(', ')}`);
+  } catch (err) {
+    if (/xls|zip|Excel|central directory/i.test(err.message)) return back(res, `/admin/events/${e.id}`, `Could not read the file: ${err.message}`);
+    next(err);
+  }
+});
+
+r.get('/events/:id/import-template.xlsx', async (req, res, next) => {
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  try {
+    const buf = await require('../importer').template(e);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="guest-list-template.xlsx"');
+    res.send(Buffer.from(buf));
+  } catch (err) { next(err); }
 });
 
 r.get('/guests/:id/whatsapp', (req, res) => {
@@ -498,13 +518,32 @@ r.get('/guests/:id', (req, res) => {
           <button class="primary sm">Add member</button></form></details>
     </div>
 
-    <div class="card"><h3>Government ID — ${g.name}</h3>
-      ${g.id_type || g.id_file ? html`<p>${g.id_type || ''} ${g.id_number ? html`· <code>${g.id_number}</code>` : ''}
-        ${g.id_consent_at ? html`<br><small class="muted">Consent given ${fmtDate(g.id_consent_at)}</small>` : ''}</p>
-        ${g.id_file ? html`<p><a class="btn" target="_blank" href="/admin/guests/${g.id}/id-file">View ID document</a></p>` : ''}
-        <form method="post" action="/admin/guests/${g.id}/delete-id" data-confirm="Delete this guest's ID data?"><button class="danger sm">Delete ID data</button></form>`
-        : html`<p class="muted">Not submitted yet.</p>`}
+    <div class="card" id="documents"><h3>🔐 ID documents <small class="muted">(encrypted · every view is logged)</small></h3>
+      ${(() => {
+        const docs = V.docsOf(g.id);
+        const rows = [
+          { who: g.name, type: g.id_type, number: g.id_number, href: g.id_file ? `/admin/guests/${g.id}/id-file` : null, primary: true },
+          ...members.map((m) => ({ who: m.name, type: m.id_type, number: m.id_number, href: m.id_file ? `/admin/members/${m.id}/id-file` : null, primary: true })),
+          ...docs.map((d) => ({ who: d.member_id ? members.find((m) => m.id === d.member_id)?.name : g.name, type: d.doc_type, number: d.number,
+            href: d.file ? `/admin/docs/${d.id}/file` : null, doc: d })),
+        ].filter((r) => r.type || r.href);
+        return rows.length ? html`<div class="table-wrap flat"><table class="mini"><tr><th>Person</th><th>Document</th><th>Number</th><th>Photo</th><th></th></tr>
+          ${rows.map((r) => html`<tr><td>${r.who}</td><td>${r.type || 'ID'}${r.primary ? html` <small class="muted">check-in</small>` : ''}</td>
+            <td><code>${r.number || '—'}</code></td><td>${r.href ? html`<a target="_blank" href="${r.href}">View</a>` : html`<span class="muted">none</span>`}</td>
+            <td>${r.doc ? html`<form method="post" action="/admin/docs/${r.doc.id}/delete" class="inline" data-confirm="Delete this ${r.type}?"><button class="danger sm">Delete</button></form>` : ''}</td></tr>`)}
+        </table></div>
+        ${g.id_consent_at ? html`<p class="muted small">Guest consent recorded ${fmtDate(g.id_consent_at)}</p>` : ''}` : html`<p class="muted">No ID documents yet.</p>`;
+      })()}
+      <details><summary>+ Add a document (PAN, passport…)</summary>
+        <form method="post" action="/admin/guests/${g.id}/docs" enctype="multipart/form-data" class="form"><div class="fields">
+          <label>Person<select name="member_id"><option value="">${g.name}</option>${members.map((m) => html`<option value="${m.id}">${m.name}</option>`)}</select></label>
+          <label>Document${sel('doc_type', V.DOC_TYPES.map((t) => [t, t]), V.extraDocTypes(e)[0] || 'PAN')}</label>
+          <label>Number<input name="number" autocomplete="off"></label>
+          <label>Photo<input type="file" name="file" accept="image/*,application/pdf"></label></div>
+          <button class="primary sm">Save securely</button></form></details>
+      ${g.id_type || g.id_file || members.some((m) => m.id_file) ? html`<form method="post" action="/admin/guests/${g.id}/delete-id" data-confirm="Delete all ID data for this party?" class="top-gap"><button class="danger sm">Delete all IDs of this party</button></form>` : ''}
     </div>
+    ${require('./wa').guestPanel(g, require('../whatsapp').eventWithOrg(e.id))}
     <div class="grid2">
       <div class="card"><h3>Timeline</h3>
         <form method="post" action="/caller/guest/${g.id}/note" class="form noteform">
@@ -558,7 +597,11 @@ r.post('/guests/:id/delete-id', (req, res) => {
   const { g, e } = T.loadGuest(req, res, req.params.id);
   if (!g) return;
   S.removeUpload('ids', g.id_file);
+  for (const m of W.membersOf(g.id)) S.removeUpload('ids', m.id_file);
+  for (const d of V.docsOf(g.id)) V.removeFile(d.file);
   db.prepare('UPDATE guests SET id_type=NULL, id_number=NULL, id_file=NULL, id_consent_at=NULL WHERE id=?').run(g.id);
+  db.prepare('UPDATE guest_members SET id_type=NULL, id_number=NULL, id_file=NULL WHERE guest_id=?').run(g.id);
+  db.prepare('DELETE FROM id_documents WHERE guest_id=?').run(g.id);
   back(res, `/admin/guests/${g.id}`, 'ID data deleted');
 });
 
@@ -567,13 +610,16 @@ r.post('/guests/:id/delete', (req, res) => {
   if (!g) return;
   S.removeUpload('ids', g.id_file);
   for (const m of W.membersOf(g.id)) S.removeUpload('ids', m.id_file);
+  for (const d of V.docsOf(g.id)) V.removeFile(d.file);
   db.prepare('DELETE FROM guests WHERE id = ?').run(g.id);
   back(res, `/admin/events/${g.event_id}`, `Deleted ${g.name}`);
 });
 
 r.get('/guests/:id/id-file', (req, res) => {
   const { g } = T.loadGuest(req, res, req.params.id);
-  if (g) S.sendUpload(res, 'ids', g.id_file);
+  if (!g) return;
+  S.logActivity(g.event_id, g.id, req.user.name, 'id_view', `Viewed ${g.id_type || 'ID'} of ${g.name}`);
+  S.sendUpload(res, 'ids', g.id_file);
 });
 
 // A call is visible if its wedding is; unmatched (no wedding) recordings belong to Candid Dulhan.
@@ -690,7 +736,7 @@ r.get('/platform', platformOnly, (req, res) => {
   const staffPicker = T.orgTeam(db.platformOrgId);
   const stat = (v, l) => html`<div class="stat"><div class="stat-v">${v}</div><div class="stat-l">${l}</div></div>`;
   res.send(page(req, 'Platform', html`
-    <p><a href="/admin">← Weddings</a></p><h1>Platform dashboard</h1>
+    <p><a href="/admin">← Weddings</a></p><div class="head"><h1>Platform dashboard</h1><div class="actions"><a class="btn" href="/admin/whatsapp">💬 WhatsApp setup</a></div></div>
     <p class="muted">Event companies using the free software, and the weddings where they want your RSVP desk. Companies sign up at <code>/signup</code>.</p>
     <section class="stats">${stat(orgs.length, 'Partner companies')}${stat(tot.weddings, 'Their weddings')}${stat(tot.guests, 'Guests on platform')}
       ${stat(requested, 'Service requests')}${stat(tot.services, 'Active services')}</section>

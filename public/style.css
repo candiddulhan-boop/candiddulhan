@@ -248,3 +248,27 @@ button.loading { opacity: .7; cursor: progress; }
 }
 @media (display-mode: standalone) { .install-btn { display: none; } }
 @media (max-width: 600px) { .row.fn-row { grid-template-columns: 2fr 1fr; gap: 8px; } .row.fn-row label { margin-bottom: 6px; } }
+.danger-zone.left { text-align: left; margin-top: 16px; }
+.top-gap { margin-top: 10px; }
+
+/* WhatsApp */
+.wa-bubble { background: #e7fbe0; border-radius: 10px 10px 10px 2px; padding: 10px 12px; max-width: 520px; margin: 6px 0 12px; box-shadow: 0 1px 0 rgba(0,0,0,.06); font-size: .92rem; }
+.wa-buttons { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; border-top: 1px solid #cfe9c6; padding-top: 6px; }
+.wa-buttons span { text-align: center; color: #128c7e; font-weight: 600; font-size: .85rem; }
+.wa-thread { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; padding: 8px; background: #efeae2; border-radius: 10px; }
+.wa-msg { max-width: 85%; padding: 7px 10px; border-radius: 8px; font-size: .9rem; }
+.wa-msg small { display: block; color: var(--muted); font-size: .7rem; margin-top: 2px; }
+.wa-msg.out { align-self: flex-end; background: #d9fdd3; } .wa-msg.in { align-self: flex-start; background: #fff; }
+.wa-st.read { color: #34b7f1; } .wa-st.failed { color: var(--no); } .wa-st.simulated { color: #8a6a0a; }
+.tpl { border-bottom: 1px solid var(--line); padding: 10px 0; } .tpl pre { white-space: pre-wrap; background: #faf6f1; padding: 8px 10px; border-radius: 8px; font: .88rem/1.4 Inter, sans-serif; margin: 6px 0; }
+.sim { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Automation */
+.auto-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.auto-rule { margin: 0; } .auto-rule.on { border-color: #bfe0cb; background: #f6fbf7; }
+.auto-save { grid-column: 1 / -1; }
+.switch { display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.switch input { width: 20px; height: 20px; accent-color: var(--yes); }
+.mini-field { font-size: .78rem; color: var(--muted); display: flex; flex-direction: column; }
+.mini-field input { width: 90px; }
+.scroll-box { max-height: 520px; overflow-y: auto; }

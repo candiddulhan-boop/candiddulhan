@@ -99,7 +99,7 @@ try {
     const info = db.prepare(`INSERT INTO guests (event_id, name, phone, side, group_name, max_pax, token, invited_at, rsvp_status, pax,
       arrival_date, arrival_mode, needs_stay, dietary, responded_at, id_type, id_number, id_consent_at, assigned_to, follow_up_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(eventId, name, phone, side, group, maxPax, token(), invitedAt, status,
-      pax, arrival, mode, stay, dietary, responded, idType, idType ? String(400000000000 + i * 7919) : null, idType ? responded : null,
+      pax, arrival, mode, stay, dietary, responded, idType, idType ? require('../src/vault').checkNumber(idType === 'Aadhaar' ? 'Aadhaar' : 'Other', String(400000000000 + i * 7919)).value : null, idType ? responded : null,
       assignee?.id ?? null, followUp == null ? null : ahead(followUp));
     const gid = Number(info.lastInsertRowid);
     // Rich profile fields
@@ -125,7 +125,7 @@ try {
       ['Spouse', 'Son', 'Daughter', 'Mother'].slice(0, Math.min(maxPax - 1, 3)).forEach((rel, k) =>
         db.prepare('INSERT INTO guest_members (guest_id, name, relation, age_group, id_type, id_number, sort) VALUES (?,?,?,?,?,?,?)')
           .run(gid, `${name.split(' ')[1] || ''} ${['Sunita', 'Aryan', 'Kiara', 'Kamla'][k]}`.trim(), rel, rel === 'Mother' ? 'Senior' : k ? 'Child' : 'Adult',
-            k === 0 ? 'Aadhaar' : null, k === 0 ? String(500000000000 + i * 131) : null, k));
+            k === 0 ? 'Aadhaar' : null, k === 0 ? `XXXXXXXX${String(500000000000 + i * 131).slice(-4)}` : null, k));
     }
     log.run(eventId, gid, 'Meera', 'invite', 'WhatsApp invite sent', invitedAt);
     if (assignee) log.run(eventId, gid, 'Priya', 'assign', `Assigned to ${assignee.name} (auto-split)`, ago(80));
@@ -141,6 +141,38 @@ try {
       if (status !== 'pending') log.run(eventId, gid, assignee.name, 'rsvp', `RSVP updated on call: ${{ yes: 'Attending', no: 'Declined', maybe: 'Maybe' }[status]}`, ago(20 - i / 2));
     }
   });
+  // WhatsApp history (as sent in test mode), PAN collection and automation rules for the demo wedding.
+  require('../src/whatsapp');
+  require('../src/automation');
+  db.prepare("UPDATE events SET extra_docs = 'PAN', id_retention_days = 30 WHERE id = ?").run(eventId);
+  const all = db.prepare('SELECT * FROM guests WHERE event_id = ? ORDER BY id').all(eventId);
+  const camp = (purpose, audience, hoursAgo, list, statusOf) => {
+    const cid = Number(db.prepare("INSERT INTO wa_campaigns (event_id, purpose, audience, total, source, created_by, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(eventId, purpose, audience, list.length, audience === 'auto' ? 'auto' : 'manual', audience === 'auto' ? 'Automation' : 'Meera', ago(hoursAgo)).lastInsertRowid);
+    list.forEach((g, i) => db.prepare(`INSERT INTO wa_messages (event_id, guest_id, campaign_id, direction, purpose, body, phone, wa_id, status, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(eventId, g.id, cid, 'out', purpose,
+      purpose === 'invite' ? `Namaste ${g.name} 🙏 With great joy, Royal Knot Events (Demo) invite you to the wedding of Aarav & Diya (Demo) on 12 Dec 2026 at The Leela Palace, Udaipur. Please confirm your presence using the button below.`
+        : `Namaste ${g.name}, a gentle reminder to confirm your attendance for the wedding of Aarav & Diya (Demo) on 12 Dec 2026 at The Leela Palace, Udaipur. Please tap a button below to reply.`,
+      `91${g.phone}`, `sim-seed-${cid}-${i}`, statusOf(i), ago(hoursAgo)));
+  };
+  camp('invite', 'not_invited', 90, all, (i) => (i % 5 === 0 ? 'delivered' : 'read'));
+  const pendingNow = all.filter((g) => g.rsvp_status === 'pending');
+  camp('reminder', 'auto', 20, pendingNow, (i) => (i % 3 === 0 ? 'delivered' : i % 4 === 0 ? 'failed' : 'read'));
+  const inbound = (g, text, hoursAgo) => db.prepare(`INSERT INTO wa_messages (event_id, guest_id, direction, body, phone, wa_id, status, created_at)
+    VALUES (?,?,?,?,?,?, 'received', ?)`).run(eventId, g.id, 'in', text, `91${g.phone}`, `sim-in-${g.id}-${hoursAgo}`, ago(hoursAgo));
+  const byName = (n) => all.find((g) => g.name === n);
+  inbound(byName('Farah Khan'), 'Yes, attending', 60);
+  inbound(byName('Anil Kapoor'), 'Please call me', 18);
+  inbound(byName('Sneha Kulkarni'), 'Will confirm after checking flights 🙏', 5);
+  for (const [rule, cfg] of [['rsvp_reminders', { every: 3, max: 3 }], ['escalate_to_callers', { after: 3 }], ['auto_assign', {}],
+    ['id_requests', { every: 4, max: 3 }], ['itinerary', { days: 2 }], ['daily_digest', { hour: 9 }], ['id_retention', {}]]) {
+    db.prepare("INSERT OR REPLACE INTO automations (event_id, rule, enabled, config, last_run_at) VALUES (?,?,1,?, datetime('now', '-2 hours'))").run(eventId, rule, JSON.stringify(cfg));
+  }
+  const autoLog = db.prepare("INSERT INTO activities (event_id, guest_id, actor, kind, detail, created_at) VALUES (?,?,?,?,?,?)");
+  autoLog.run(eventId, null, 'Automation', 'auto', `Sent ${pendingNow.length} RSVP reminders on WhatsApp`, ago(20));
+  autoLog.run(eventId, null, 'Automation', 'auto', 'Daily summary sent to the planner on WhatsApp', ago(8));
+  autoLog.run(eventId, byName('Harish Mehta').id, 'Automation', 'auto', 'No reply after 3 WhatsApp reminders — call follow-up created for Ravi', ago(6));
+
   // A sample AI status report so the demo shows the feature before an API key is configured.
   require('../src/smart');
   db.prepare("INSERT INTO ai_notes (event_id, kind, content, created_by) VALUES (?, 'summary', ?, 'Demo sample — not generated by AI')").run(eventId, JSON.stringify({

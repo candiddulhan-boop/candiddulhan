@@ -8,6 +8,7 @@ const S = require('../shared');
 const T = require('../tenancy');
 const W = require('../wedding');
 const F = require('../fields');
+const V = require('../vault');
 
 const r = express.Router();
 r.use(requireRole('admin'));
@@ -299,15 +300,21 @@ r.get('/events/:id/transport.csv', (req, res) => {
 });
 
 // ---------------- Family members ----------------
-const memberFields = (b) => [clean(b.name, 80), clean(b.relation, 60), ['Adult', 'Child', 'Senior'].includes(b.age_group) ? b.age_group : null,
-  clean(b.gender, 10), clean(b.phone, 20), clean(b.dietary, 40), clean(b.id_type, 30), b.id_number ? String(b.id_number).replace(/\s+/g, '').slice(0, 30) : null];
+function memberFields(b) {
+  const id = V.checkNumber(b.id_type, b.id_number);
+  if (id.error) throw Object.assign(new Error(id.error), { user: true });
+  return [clean(b.name, 80), clean(b.relation, 60), ['Adult', 'Child', 'Senior'].includes(b.age_group) ? b.age_group : null,
+    clean(b.gender, 10), clean(b.phone, 20), clean(b.dietary, 40), clean(b.id_type, 30), id.value];
+}
 
 r.post('/guests/:id/members', S.idUpload.single('id_file'), (req, res) => {
   const { g } = T.loadGuest(req, res, req.params.id);
   if (!g) { S.removeUpload('ids', req.file?.filename); return; }
   if (!clean(req.body.name)) { S.removeUpload('ids', req.file?.filename); return back(res, `/admin/guests/${g.id}`, 'Member name is required'); }
+  let vals;
+  try { vals = memberFields(req.body); } catch (err) { S.removeUpload('ids', req.file?.filename); return back(res, `/admin/guests/${g.id}#members`, err.message); }
   db.prepare(`INSERT INTO guest_members (name, relation, age_group, gender, phone, dietary, id_type, id_number, id_file, guest_id, sort)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...memberFields(req.body), req.file?.filename || null, g.id, W.membersOf(g.id).length);
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...vals, req.file?.filename || null, g.id, W.membersOf(g.id).length);
   S.logActivity(g.event_id, g.id, req.user.name, 'note', `Family member added: ${req.body.name}`);
   back(res, `/admin/guests/${g.id}#members`, `Added ${req.body.name}`);
 });
@@ -324,19 +331,71 @@ r.post('/members/:mid', S.idUpload.single('id_file'), (req, res) => {
   if (!m) { S.removeUpload('ids', req.file?.filename); return; }
   if (req.body.action === 'delete') {
     S.removeUpload('ids', m.id_file);
+    V.docsOf(g.id).filter((d) => d.member_id === m.id).forEach((d) => V.removeFile(d.file));
     db.prepare('DELETE FROM guest_members WHERE id = ?').run(m.id);
     return back(res, `/admin/guests/${g.id}#members`, `Removed ${m.name}`);
   }
+  let vals;
+  try { vals = memberFields(req.body); } catch (err) { S.removeUpload('ids', req.file?.filename); return back(res, `/admin/guests/${g.id}#members`, err.message); }
   if (req.file) S.removeUpload('ids', m.id_file);
-  const vals = memberFields(req.body);
   db.prepare(`UPDATE guest_members SET name = COALESCE(?, name), relation=?, age_group=?, gender=?, phone=?, dietary=?, id_type=?,
     id_number = COALESCE(?, id_number), id_file = COALESCE(?, id_file) WHERE id = ?`).run(...vals, req.file?.filename || null, m.id);
   back(res, `/admin/guests/${g.id}#members`, `Saved ${m.name}`);
 });
 
 r.get('/members/:mid/id-file', (req, res) => {
-  const { m } = loadMember(req, res);
-  if (m) S.sendUpload(res, 'ids', m.id_file);
+  const { m, g } = loadMember(req, res);
+  if (!m) return;
+  S.logActivity(g.event_id, g.id, req.user.name, 'id_view', `Viewed ${m.id_type || 'ID'} of ${m.name}`);
+  S.sendUpload(res, 'ids', m.id_file);
+});
+
+// ---------------- Extra ID documents (PAN, passport …) ----------------
+r.post('/guests/:id/docs', S.idUpload.single('file'), (req, res) => {
+  const { g } = T.loadGuest(req, res, req.params.id);
+  if (!g) { S.removeUpload('ids', req.file?.filename); return; }
+  const b = req.body;
+  const url = `/admin/guests/${g.id}#documents`;
+  const memberId = b.member_id ? Number(b.member_id) : null;
+  if (memberId && !W.membersOf(g.id).some((m) => m.id === memberId)) { S.removeUpload('ids', req.file?.filename); return back(res, url, 'Unknown family member'); }
+  if (!V.DOC_TYPES.includes(b.doc_type)) { S.removeUpload('ids', req.file?.filename); return back(res, url, 'Choose a document type'); }
+  const num = V.checkNumber(b.doc_type, b.number);
+  if (num.error) { S.removeUpload('ids', req.file?.filename); return back(res, url, num.error); }
+  if (!num.value && !req.file) return back(res, url, 'Add a number or a photo');
+  V.saveDoc(g.id, memberId, b.doc_type, { number: num.value, file: req.file?.filename });
+  S.logActivity(g.event_id, g.id, req.user.name, 'id', `${b.doc_type} added${memberId ? ` for ${W.membersOf(g.id).find((m) => m.id === memberId).name}` : ''}`);
+  back(res, url, `${b.doc_type} saved (encrypted)`);
+});
+
+function loadDoc(req, res) {
+  const d = db.prepare('SELECT * FROM id_documents WHERE id = ?').get(req.params.did);
+  if (!d) { res.status(404).send('Not found'); return {}; }
+  const { g } = T.loadGuest(req, res, d.guest_id);
+  return g ? { d, g } : {};
+}
+r.get('/docs/:did/file', (req, res) => {
+  const { d, g } = loadDoc(req, res);
+  if (!d) return;
+  const who = d.member_id ? db.prepare('SELECT name FROM guest_members WHERE id = ?').get(d.member_id)?.name : g.name;
+  S.logActivity(g.event_id, g.id, req.user.name, 'id_view', `Viewed ${d.doc_type} of ${who}`);
+  S.sendUpload(res, 'ids', d.file);
+});
+r.post('/docs/:did/delete', (req, res) => {
+  const { d, g } = loadDoc(req, res);
+  if (!d) return;
+  V.removeFile(d.file);
+  db.prepare('DELETE FROM id_documents WHERE id = ?').run(d.id);
+  S.logActivity(g.event_id, g.id, req.user.name, 'id', `${d.doc_type} deleted`);
+  back(res, `/admin/guests/${g.id}#documents`, `${d.doc_type} deleted`);
+});
+
+r.post('/events/:id/purge-ids', (req, res) => {
+  const e = T.loadEvent(req, res, req.params.id);
+  if (!e) return;
+  if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
+  const n = V.purgeEvent(e.id);
+  S.logActivity(e.id, null, req.user.name, 'id', `All ID documents deleted (${n} files)`);
+  back(res, `/admin/events/${e.id}/settings`, `Deleted ${n} ID files and all ID numbers for this wedding`);
 });
 
 module.exports = r;

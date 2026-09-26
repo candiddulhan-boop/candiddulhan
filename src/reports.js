@@ -98,10 +98,12 @@ async function excel(eventId, { forClient = false } = {}) {
   const fields = F.GUEST_FIELDS.filter((f) => !(forClient && f.key === 'internal_notes'));
   const statusLabel = (x) => S.STATUS_LABEL[x] || x;
   addTable(wb, 'Guests',
-    [...fields.map((f) => f.label), 'RSVP', 'People attending', ...fns.map((f) => f.name), 'ID', 'Responded'],
+    [...fields.map((f) => f.label), 'RSVP', 'People attending', ...fns.map((f) => f.name), 'ID', 'Other documents', 'Responded'],
     guests.map((g) => [...fields.map((f) => F.display(f, g, hotels)), statusLabel(g.rsvp_status), g.pax,
       ...fns.map((f) => { const a = answers.get(g.id)?.get(f.id); return a ? statusLabel(a.rsvp) : '—'; }),
-      g.id_file ? `${g.id_type || 'ID'} ${maskId(g.id_number)}` : g.id_type ? `${g.id_type} (no photo)` : '', g.responded_at || '']),
+      g.id_file ? `${g.id_type || 'ID'} ${maskId(g.id_number)}` : g.id_type ? `${g.id_type} (no photo)` : '',
+      db.prepare('SELECT doc_type, number FROM id_documents WHERE guest_id = ? AND member_id IS NULL').all(g.id).map((d) => `${d.doc_type} ${maskId(d.number) || ''}`.trim()).join('; '),
+      g.responded_at || '']),
     { statusCol: fields.length + 1, widths: { Name: 26, 'Relation to couple': 18, 'Guest’s message': 30, 'Internal notes (team only)': 30 } });
 
   // Function-wise headcount per guest

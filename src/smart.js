@@ -45,6 +45,15 @@ function alerts(e) {
       `${noId} main guests and ${memNoId} adult family members. Hotels need these at check-in.`, `${base}?status=yes`);
   }
 
+  const extra = String(e.extra_docs || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (e.require_id && extra.length) {
+    const attending = q("SELECT COUNT(*) n FROM guests WHERE event_id = ? AND rsvp_status = 'yes'").n;
+    for (const t of extra) {
+      const have = q(`SELECT COUNT(DISTINCT d.guest_id) n FROM id_documents d JOIN guests g ON g.id = d.guest_id
+        WHERE g.event_id = ? AND g.rsvp_status = 'yes' AND d.member_id IS NULL AND d.doc_type = ?`, t).n;
+      if (attending - have > 0) add('medium', `${attending - have} attending guests haven’t shared ${t}`, `${t} is requested for this wedding.`, `${base}?status=yes`);
+    }
+  }
   const soon = q(`SELECT COUNT(*) n FROM guests WHERE event_id = ? AND rsvp_status = 'yes' AND pickup_required = 1
     AND (pickup_vehicle IS NULL OR pickup_vehicle = '') AND arrival_date <= date(?, '+3 days')`, today()).n;
   const later = q(`SELECT COUNT(*) n FROM guests WHERE event_id = ? AND rsvp_status = 'yes' AND pickup_required = 1

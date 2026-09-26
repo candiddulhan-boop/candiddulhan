@@ -94,6 +94,8 @@ app.post('/logout', (_req, res) => { auth.logout(res); res.redirect('/login'); }
 
 app.use('/api', require('./routes/api'));
 app.use(require('./routes/smart').router);
+app.use(require('./routes/wa').router);
+app.use(require('./routes/automation').router);
 app.use('/admin', require('./routes/ops'));
 app.use('/admin', require('./routes/admin'));
 app.use('/caller', require('./routes/caller'));
@@ -110,6 +112,7 @@ app.use((err, _req, res, _next) => {
 if (require.main === module) {
   if (config.adminPassword === 'admin') console.warn('⚠  ADMIN_PASSWORD is not set — using "admin". Set it before going live.');
   app.listen(config.port, () => console.log(`Candid Dulhan RSVP running on http://localhost:${config.port}`));
+  require('./automation').start();
 }
 
 module.exports = app;

@@ -6,6 +6,9 @@ const { html, maskId, fmtDate } = require('../util');
 const S = require('../shared');
 const W = require('../wedding');
 const F = require('../fields');
+const V = require('../vault');
+
+const slug = (t) => t.replace(/\W/g, '');
 
 const r = express.Router();
 
@@ -41,6 +44,13 @@ function form(e, g, { error, posted } = {}) {
     : [['yes', 'Joyfully accept'], ['maybe', 'Not sure yet'], ['no', 'Regretfully decline']])
     .map(([val, label]) => html`<label class="pill"><input type="radio" name="${name}" value="${val}" data-answer ${cur === val ? 'checked' : ''} required><span>${label}</span></label>`)}</div>`;
   const memberSlots = Math.max(0, g.max_pax - 1);
+  const extra = e.require_id ? V.extraDocTypes(e) : [];
+  const docs = V.docsOf(g.id);
+  const hasDoc = (memberId, type) => docs.find((d) => (d.member_id ?? null) === (memberId ?? null) && d.doc_type === type);
+  const extraInputs = (prefix, memberId) => extra.map((t) => { const d = hasDoc(memberId, t); return html`
+    <label>${t} number ${d ? html`<small class="ok">✓ ${d.number ? maskId(d.number) : 'received'}</small>` : ''}
+      <input name="${prefix}doc_${slug(t)}_num" autocomplete="off" placeholder="${t === 'PAN' ? 'ABCDE1234F' : ''}"></label>
+    <label>${t} photo <small>(optional)</small><input type="file" name="${prefix}doc_${slug(t)}_file" accept="image/*,application/pdf"></label>`; });
   const idTypes = ['', ...S.ID_TYPES];
   return html`
   <div class="invite">
@@ -78,7 +88,8 @@ function form(e, g, { error, posted } = {}) {
               ${e.require_id ? html`
                 <label>ID type<select name="m_${i}_idtype">${idTypes.map((t) => html`<option ${(pv('idtype') ?? m.id_type) === t ? 'selected' : ''}>${t}</option>`)}</select></label>
                 <label>ID number<input name="m_${i}_idnum" autocomplete="off" placeholder="${m.id_number ? maskId(m.id_number) : ''}"></label>
-                <label>ID photo ${m.id_file ? html`<small class="ok">✓ received</small>` : ''}<input type="file" name="m_${i}_file" accept="image/*,application/pdf"></label>` : ''}
+                <label>ID photo ${m.id_file ? html`<small class="ok">✓ received</small>` : ''}<input type="file" name="m_${i}_file" accept="image/*,application/pdf"></label>
+                ${extraInputs(`m_${i}_`, m.id || -1)}` : ''}
             </div></div>`;
         })}
         <label>Children in your party<input type="number" name="kids" min="0" max="${g.max_pax}" value="${v('kids')}"></label>
@@ -105,11 +116,12 @@ function form(e, g, { error, posted } = {}) {
 
       ${e.require_id ? html`
         <fieldset><legend>Your government ID</legend>
-          <p class="muted small">Required by the hotel/venue for check-in and security. Shared only with the wedding family and their planners, and deleted after the event.</p>
+          <p class="muted small">Required by the hotel/venue for check-in and security. Stored encrypted, shared only with the wedding family and their planners, and deleted after the event. For Aadhaar, a <strong>masked Aadhaar</strong> (from the UIDAI website) is preferred — we keep only the last 4 digits of the number.</p>
           ${g.id_file ? html`<p class="ok">✓ ${g.id_type} received ${g.id_number ? html`(${maskId(g.id_number)})` : ''}. Upload again only to replace it.</p>` : ''}
           <div class="fields"><label>ID type<select name="id_type">${idTypes.map((t) => html`<option ${(v('id_type')) === t ? 'selected' : ''}>${t}</option>`)}</select></label>
             <label>ID number<input name="id_number" autocomplete="off" placeholder="${g.id_number ? maskId(g.id_number) : ''}"></label>
-            <label>Photo of ID (front)<input type="file" name="id_file" accept="image/*,application/pdf"></label></div>
+            <label>Photo of ID (front)<input type="file" name="id_file" accept="image/*,application/pdf"></label>
+            ${extraInputs('', null)}</div>
           <label class="check"><input type="checkbox" name="id_consent" value="1" ${g.id_consent_at || (posted && posted.id_consent) ? 'checked' : ''}> I consent to sharing these IDs (mine and my family’s) with the hosts and their planners for this wedding.</label>
         </fieldset>` : ''}
     </div>
@@ -154,7 +166,30 @@ r.post('/:token', S.idUploadMany.any(), (req, res) => {
     if (!answer(b.rsvp_status)) return fail('Please choose whether you will attend.');
     going = b.rsvp_status !== 'no';
   }
-  if (files.size && !b.id_consent) return fail('Please tick the consent box to share IDs.');
+  if ((files.size || b.id_number || Object.keys(b).some((k) => /doc_.*_num$/.test(k) && b[k])) && e.require_id && !b.id_consent) {
+    return fail('Please tick the consent box to share IDs.');
+  }
+  // Validate every ID number before saving anything.
+  const extra = e.require_id ? V.extraDocTypes(e) : [];
+  const checked = {};
+  const check = (field, type, who) => {
+    if (!b[field]) return null;
+    const r = V.checkNumber(type, b[field]);
+    if (r.error) throw new Error(`${who}: ${r.error}`);
+    checked[field] = r.value;
+    return r.value;
+  };
+  try {
+    if (e.require_id) {
+      check('id_number', b.id_type, 'Your ID');
+      for (const t of extra) check(`doc_${slug(t)}_num`, t, `Your ${t}`);
+      for (let i = 0; i < Math.max(0, g.max_pax - 1); i++) {
+        const who = String(b[`m_${i}_name`] || `Family member ${i + 1}`).trim();
+        check(`m_${i}_idnum`, b[`m_${i}_idtype`], `${who}’s ID`);
+        for (const t of extra) check(`m_${i}_doc_${slug(t)}_num`, t, `${who}’s ${t}`);
+      }
+    }
+  } catch (err) { return fail(err.message); }
 
   // Answers
   const summary = [];
@@ -187,28 +222,42 @@ r.post('/:token', S.idUploadMany.any(), (req, res) => {
       const name = String(b[`m_${i}_name`] || '').trim().slice(0, 80);
       const file = files.get(`m_${i}_file`);
       if (!name) {
-        if (existing) { S.removeUpload('ids', existing.id_file); db.prepare('DELETE FROM guest_members WHERE id = ?').run(existing.id); }
+        if (existing) {
+          S.removeUpload('ids', existing.id_file);
+          V.docsOf(g.id).filter((d) => d.member_id === existing.id).forEach((d) => V.removeFile(d.file));
+          db.prepare('DELETE FROM guest_members WHERE id = ?').run(existing.id);
+        }
         if (file) { S.removeUpload('ids', file); files.delete(`m_${i}_file`); }
         continue;
       }
       const vals = [name, String(b[`m_${i}_relation`] || '').slice(0, 60) || null,
         ['Adult', 'Child', 'Senior'].includes(b[`m_${i}_age`]) ? b[`m_${i}_age`] : null,
         e.require_id ? b[`m_${i}_idtype`] || null : null,
-        e.require_id && b[`m_${i}_idnum`] ? String(b[`m_${i}_idnum`]).replace(/\s+/g, '').slice(0, 30) : null, file || null];
+        e.require_id ? checked[`m_${i}_idnum`] ?? null : null, file || null];
+      let memberId;
       if (existing) {
         if (file) S.removeUpload('ids', existing.id_file);
         db.prepare(`UPDATE guest_members SET name = ?, relation = ?, age_group = ?, id_type = COALESCE(?, id_type),
           id_number = COALESCE(?, id_number), id_file = COALESCE(?, id_file) WHERE id = ?`).run(...vals, existing.id);
+        memberId = existing.id;
       } else {
-        db.prepare('INSERT INTO guest_members (name, relation, age_group, id_type, id_number, id_file, guest_id, sort) VALUES (?,?,?,?,?,?,?,?)')
-          .run(...vals, g.id, i);
+        memberId = Number(db.prepare('INSERT INTO guest_members (name, relation, age_group, id_type, id_number, id_file, guest_id, sort) VALUES (?,?,?,?,?,?,?,?)')
+          .run(...vals, g.id, i).lastInsertRowid);
+      }
+      for (const t of extra) {
+        const num = checked[`m_${i}_doc_${slug(t)}_num`], f = files.get(`m_${i}_doc_${slug(t)}_file`);
+        if (num || f) V.saveDoc(g.id, memberId, t, { number: num, file: f });
       }
     }
 
     if (e.require_id && (files.has('id_file') || b.id_type || b.id_number)) {
       if (files.has('id_file')) S.removeUpload('ids', g.id_file);
       db.prepare(`UPDATE guests SET id_type = COALESCE(?, id_type), id_number = COALESCE(?, id_number), id_file = COALESCE(?, id_file) WHERE id = ?`)
-        .run(b.id_type || null, b.id_number ? String(b.id_number).replace(/\s+/g, '').slice(0, 30) : null, files.get('id_file') || null, g.id);
+        .run(b.id_type || null, checked.id_number ?? null, files.get('id_file') || null, g.id);
+    }
+    for (const t of extra) {
+      const num = checked[`doc_${slug(t)}_num`], f = files.get(`doc_${slug(t)}_file`);
+      if (num || f) V.saveDoc(g.id, null, t, { number: num, file: f });
     }
     if (files.size) {
       db.prepare("UPDATE guests SET id_consent_at = datetime('now') WHERE id = ?").run(g.id);
@@ -216,6 +265,12 @@ r.post('/:token', S.idUploadMany.any(), (req, res) => {
     }
   } else dropFiles();
 
+  // Remove any uploaded file that did not end up attached to a record.
+  for (const f of files.values()) {
+    const used = db.prepare(`SELECT 1 FROM guests WHERE id_file = ? UNION SELECT 1 FROM guest_members WHERE id_file = ?
+      UNION SELECT 1 FROM id_documents WHERE file = ?`).get(f, f, f);
+    if (!used) S.removeUpload('ids', f);
+  }
   S.logActivity(e.id, g.id, 'Guest', 'rsvp', `${g.responded_at ? 'Updated RSVP' : 'RSVP received'}: ${summary.join(', ')}`);
   res.redirect(`/i/${g.token}?done=1`);
 });

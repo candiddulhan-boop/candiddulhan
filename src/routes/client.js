@@ -120,7 +120,16 @@ r.get('/export.csv', (req, res) => {
   res.send('﻿' + S.guestsCsv(req.event.id, { withIdNumbers: true, forClient: true }));
 });
 
-r.get('/guests/:id/id-file', (req, res) => S.sendUpload(res, 'ids', guestOf(req)?.id_file));
+r.get('/guests/:id/id-file', (req, res) => {
+  const g = guestOf(req);
+  if (g) S.logActivity(g.event_id, g.id, 'Client', 'id_view', `Viewed ${g.id_type || 'ID'} of ${g.name} (client dashboard)`);
+  S.sendUpload(res, 'ids', g?.id_file);
+});
+r.get('/docs/:did/file', (req, res) => {
+  const d = db.prepare('SELECT d.*, g.name, g.event_id FROM id_documents d JOIN guests g ON g.id = d.guest_id WHERE d.id = ? AND g.event_id = ?').get(req.params.did, req.event.id);
+  if (d) S.logActivity(d.event_id, d.guest_id, 'Client', 'id_view', `Viewed ${d.doc_type} of ${d.name} (client dashboard)`);
+  S.sendUpload(res, 'ids', d?.file);
+});
 r.get('/calls/:id/recording', (req, res) => S.sendUpload(res, 'recordings',
   db.prepare('SELECT recording_file FROM calls WHERE id = ? AND event_id = ?').get(req.params.id, req.event.id)?.recording_file));
 

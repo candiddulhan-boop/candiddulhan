@@ -195,3 +195,10 @@ document.addEventListener('click', async (ev) => {
   installPrompt = null;
   document.querySelectorAll('[data-install]').forEach((b) => { b.hidden = true; });
 });
+
+// WhatsApp send form: show the preview of the chosen template.
+document.querySelectorAll('[data-wa-purpose]').forEach((sel) => {
+  const sync = () => sel.closest('form').querySelectorAll('[data-preview]').forEach((p) => { p.hidden = p.dataset.preview !== sel.value; });
+  sel.addEventListener('change', sync);
+  sync();
+});

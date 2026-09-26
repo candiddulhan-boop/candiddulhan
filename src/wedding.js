@@ -81,6 +81,8 @@ function eventNav(e, active, { owner } = {}) {
     ${tab('rooming', 'Rooming', `/admin/events/${e.id}/rooming`)}
     ${tab('transport', 'Transport', `/admin/events/${e.id}/transport`)}
     ${tab('fields', 'Custom fields', `/admin/events/${e.id}/fields`)}
+    ${tab('whatsapp', '💬 WhatsApp', `/admin/events/${e.id}/whatsapp`)}
+    ${tab('automation', '⚙️ Automation', `/admin/events/${e.id}/automation`)}
     ${tab('insights', '✨ Reports & AI', `/admin/events/${e.id}/insights`)}
     ${owner ? tab('settings', 'Settings', `/admin/events/${e.id}/settings`) : ''}
   </nav>`;

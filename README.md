@@ -54,6 +54,52 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 
 **Switching on AI:** set `ANTHROPIC_API_KEY` in `.env`. The model is Claude Opus 5 (`claude-opus-5`); set `AI_MODEL` to use a different one. If Claude declines a request, Anthropic automatically retries it on its recommended fallback model (`fallbacks: "default"`). Guest **phone numbers and ID numbers are never sent to the AI**; names, RSVPs, travel and notes are. Mention this AI processing in your privacy notice. Without a key, everything else works and the AI buttons explain how to switch it on.
 
+### Bulk upload
+On the Guests tab, open **Bulk upload guests** and click **Download the Excel template**. It has dropdowns, examples and a "How to fill" sheet. Fill it in (or use your own sheet or CSV with similar headers) and upload it.
+- Columns cover names, mobiles, family members (`Neha (Wife); Tia (Daughter, Child)`), functions, travel, hotel (hotels are created automatically), room type, food, special needs and custom fields.
+- **Uploading again updates** guests matched by mobile number (or by name when there is no mobile). Filled cells overwrite; empty cells keep what is saved.
+- Bad or duplicate mobiles and the template's example rows are skipped, with the reason shown.
+
+### ID vault (Aadhaar, PAN, passport …)
+- Every attending adult uploads a check-in ID from their RSVP link. In **Settings → ID documents** a wedding can also ask for **PAN, passport, driving licence or voter ID**, for the main guest and each family member. The team can add documents on the guest page too.
+- **Encrypted at rest:** ID photos and PDFs are stored encrypted (AES-256-GCM). Set `ID_ENCRYPTION_KEY`, or back up `data/.id-key`; without the key, stored IDs cannot be opened. Files saved before encryption existed are encrypted automatically on startup.
+- **Aadhaar numbers are never stored in full.** Only the last 4 digits are kept, as UIDAI requires of businesses. The masked Aadhaar card is preferred. PAN and passport numbers are format-checked.
+- **Access log:** every time someone opens an ID (team or client) it is recorded on the guest's timeline.
+- **Deletion:** delete one party's IDs, delete all of a wedding's IDs with **Settings → Delete all IDs**, or have them **deleted automatically** N days after the wedding (automation rule).
+- Consent is required and recorded. Tell couples and planners how long IDs are kept, as India's data protection law (DPDP Act 2023) requires.
+
+### WhatsApp Business API
+Messages go through **Meta's official WhatsApp Cloud API**, the same system that providers like Interakt, AiSensy and Wati resell, so there is no provider markup.
+- **💬 WhatsApp tab** on each wedding: send approved templates to an audience (not invited, haven't replied, attending without ID, and so on), or to the ticked guests from the guest list. It shows sent / delivered / read / failed for each campaign, plus a replies inbox and message log.
+- **Reply buttons do the work:** when a guest taps **Yes, attending**, **Can't attend** or **Please call me**, their RSVP updates for every function, an automatic thank-you goes out, or a call follow-up is created.
+- On each guest's page: the conversation, sending a template, and a free-text reply (allowed by WhatsApp for 24 hours after the guest's last message).
+- **Test mode** (no credentials): everything works, but nothing is sent. Messages show as "simulated", and the guest page has buttons to pretend the guest replied.
+- Partner companies can bulk-send only on weddings using your RSVP desk. Set `WHATSAPP_PARTNER_ACCESS=all` to allow everyone.
+
+**Going live:**
+1. At business.facebook.com, verify your business and add a WhatsApp phone number. The number must not already be used on the WhatsApp app.
+2. In developers.facebook.com, create an app, add **WhatsApp**, and create a **permanent System User access token** with `whatsapp_business_messaging`.
+3. Set `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN` (any secret word) in `.env`, and restart.
+4. In the app's WhatsApp settings, set the webhook to `https://YOUR-DOMAIN/webhooks/whatsapp` with your verify token, and subscribe to `messages`.
+5. Open **Platform → WhatsApp setup** and create each listed template in WhatsApp Manager with exactly that name and text. Meta approves them, usually within minutes to a day.
+6. Pricing: Meta charges per delivered template message. In India, utility messages (reminders, ID/travel requests, itineraries) cost well under ₹1 each and marketing messages (invitations) cost more. Replies within 24 hours are free. Check Meta's current rate card.
+
+### Automation (⚙️ Automation tab)
+Switch rules on per wedding. They run every few minutes (`AUTOMATION_INTERVAL_MIN`, default 10). Guest messages are sent only between 9 am and 8 pm IST, and never the same message to the same guest twice in a day. **Run now** runs them immediately.
+
+| Rule | What it does |
+|---|---|
+| RSVP reminders | Every N days, WhatsApp reminder with reply buttons to guests who haven't replied, up to M times |
+| Hand silent guests to callers | After N unanswered reminders, creates a call follow-up for today and assigns the least-busy caller |
+| Auto-assign new guests | Shares unassigned, unconfirmed guests evenly among callers |
+| ID requests / Travel details requests | Repeated WhatsApp requests to attending guests missing an ID or arrival details |
+| Personal itineraries | N days before the first function: each guest's functions, dress codes, hotel room and pickup |
+| Daily summary to planner | Every morning: confirmed, awaiting, IDs pending, pickups without a vehicle |
+| Thank-you messages | After the wedding, to everyone who attended |
+| Auto-delete IDs | Deletes all ID documents the set number of days after the wedding |
+
+Everything automation does appears in its log and on each guest's timeline.
+
 ### Screens
 
 | URL | Who | What |
@@ -174,6 +220,11 @@ src/routes/smart.js  Reports & AI tab, Excel/PDF downloads, AI endpoints
 src/ai.js            Claude API client (model, fallbacks, errors)
 src/smart.js         rule-based alerts + AI summary, Q&A, WhatsApp drafts, call-note smart fill
 src/reports.js       Excel workbook (exceljs) and branded PDFs (pdfkit)
+src/importer.js      bulk upload from Excel/CSV + downloadable template
+src/vault.js         encrypted ID storage, Aadhaar masking, extra documents, purge
+src/whatsapp.js      WhatsApp Cloud API: templates, campaigns, webhook, replies (test mode without credentials)
+src/automation.js    automation rules + scheduler
+src/routes/wa.js, src/routes/automation.js   WhatsApp and Automation tabs, webhook
 public/sw.js         service worker for the installable app
 test/app.test.js     end-to-end tests (npm test), including data isolation between companies
 src/routes/rsvp.js   guest invitation / RSVP form

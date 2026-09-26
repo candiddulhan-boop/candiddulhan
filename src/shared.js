@@ -30,15 +30,20 @@ function uploader(kind, { accept, files = 1 }) {
 }
 
 const isIdDoc = (f) => /^image\//.test(f.mimetype) || f.mimetype === 'application/pdf';
-const idUpload = uploader('ids', { accept: isIdDoc });
-// RSVP form: one ID per family member.
-const idUploadMany = uploader('ids', { accept: isIdDoc, files: 20 });
+// ID documents go through the vault's storage engine: only ciphertext ever touches the disk.
+const V = require('./vault');
+const idMulter = (files) => multer({ storage: V.storage, limits: { fileSize: config.maxUploadMb * 1024 * 1024, files },
+  fileFilter: (_req, file, cb) => cb(null, isIdDoc(file)) });
+const idUpload = idMulter(1);
+// RSVP form: one ID per family member (plus extra documents).
+const idUploadMany = idMulter(40);
 const AUDIO_EXT = /\.(mp3|m4a|aac|amr|wav|ogg|opus|3gp|3gpp|mp4|awb|flac|webm)$/i;
 const recordingUpload = uploader('recordings', {
   accept: (f) => /^audio\//.test(f.mimetype) || AUDIO_EXT.test(f.originalname || ''),
 });
 
 function sendUpload(res, kind, file) {
+  if (kind === 'ids') return V.send(res, file);
   if (!file) return res.status(404).send('Not found');
   const p = path.join(uploadDir(kind), path.basename(file));
   if (!fs.existsSync(p)) return res.status(404).send('File missing');
@@ -48,7 +53,7 @@ function sendUpload(res, kind, file) {
 }
 
 function removeUpload(kind, file) {
-  if (file) fs.rm(path.join(uploadDir(kind), path.basename(file)), { force: true }, () => {});
+  if (file) fs.rmSync(path.join(uploadDir(kind), path.basename(file)), { force: true });
 }
 
 const baseUrl = (req) => config.baseUrl || `${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}`;
@@ -193,7 +198,7 @@ function callsTable(calls, recUrl) {
 const eventCalls = (eventId, limit = 200) => db.prepare(`SELECT c.*, g.name guest_name FROM calls c
   LEFT JOIN guests g ON g.id = c.guest_id WHERE c.event_id = ? ORDER BY c.called_at DESC LIMIT ?`).all(eventId, limit);
 
-const ACTIVITY_ICON = { invite: '✉️', rsvp: '✅', id: '🪪', call: '📞', note: '📝', assign: '👤', import: '⇪', followup: '⏰', service: '🤝' };
+const ACTIVITY_ICON = { invite: '✉️', rsvp: '✅', id: '🪪', id_view: '👁', call: '📞', note: '📝', assign: '👤', import: '⇪', followup: '⏰', service: '🤝', whatsapp: '💬', auto: '⚙️' };
 
 function logActivity(eventId, guestId, actor, kind, detail) {
   db.prepare('INSERT INTO activities (event_id, guest_id, actor, kind, detail) VALUES (?,?,?,?,?)')
@@ -271,14 +276,20 @@ function guestsCsv(eventId, { withIdNumbers, forClient }) {
   const fields = F.GUEST_FIELDS.filter((f) => !(forClient && f.key === 'internal_notes'));
   const head = [...fields.map((f) => f.label), 'RSVP', 'People attending',
     ...fns.map((f) => `${f.name} RSVP`), ...fns.map((f) => `${f.name} people`),
-    'Family members', 'ID type', 'ID number', 'ID uploaded', 'Responded at', ...cfs.map((cf) => cf.label)];
+    'Family members', 'ID type', 'ID number', 'ID uploaded', 'Other documents', 'Responded at', ...cfs.map((cf) => cf.label)];
+  const docs = new Map();
+  for (const d of db.prepare(`SELECT d.*, m.name member FROM id_documents d JOIN guests g ON g.id = d.guest_id
+      LEFT JOIN guest_members m ON m.id = d.member_id WHERE g.event_id = ?`).all(eventId)) {
+    if (!docs.has(d.guest_id)) docs.set(d.guest_id, []);
+    docs.get(d.guest_id).push(`${d.member ? `${d.member}: ` : ''}${d.doc_type} ${idNo(d.number) || '(photo)'}`);
+  }
   return toCsv([head, ...rows.map((g) => [
     ...fields.map((f) => F.display(f, g, hotels)), STATUS_LABEL[g.rsvp_status], g.pax,
     ...fns.map((f) => { const a = answers.get(g.id)?.get(f.id); return a ? STATUS_LABEL[a.rsvp] : 'Not invited'; }),
     ...fns.map((f) => { const a = answers.get(g.id)?.get(f.id); return a?.rsvp === 'yes' ? a.pax ?? 1 : ''; }),
     (members.get(g.id) || []).map((m) => [m.name, m.relation && `(${m.relation})`, m.age_group, m.id_type && `${m.id_type} ${idNo(m.id_number) || ''}`]
       .filter(Boolean).join(' ')).join('; '),
-    g.id_type, idNo(g.id_number), g.id_file ? 'Yes' : 'No', g.responded_at,
+    g.id_type, idNo(g.id_number), g.id_file ? 'Yes' : 'No', (docs.get(g.id) || []).join('; '), g.responded_at,
     ...cfs.map((cf) => cvals.get(g.id)?.get(cf.id) ?? ''),
   ])]);
 }
