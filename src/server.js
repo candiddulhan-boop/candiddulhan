@@ -15,6 +15,15 @@ app.use((_req, res, next) => {
   next();
 });
 app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h' }));
+// PWA files must be served from the site root so the service worker controls every page.
+app.get('/sw.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, '..', 'public', 'sw.js'));
+});
+app.get('/manifest.webmanifest', (_req, res) => {
+  res.type('application/manifest+json');
+  res.sendFile(path.join(__dirname, '..', 'public', 'manifest.webmanifest'));
+});
 app.use(express.urlencoded({ extended: false, limit: '200kb' }));
 app.use(auth.session);
 
@@ -84,6 +93,7 @@ app.post('/login', (req, res) => {
 app.post('/logout', (_req, res) => { auth.logout(res); res.redirect('/login'); });
 
 app.use('/api', require('./routes/api'));
+app.use(require('./routes/smart').router);
 app.use('/admin', require('./routes/ops'));
 app.use('/admin', require('./routes/admin'));
 app.use('/caller', require('./routes/caller'));

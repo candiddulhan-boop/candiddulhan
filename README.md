@@ -38,6 +38,22 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 - **Import:** a CSV with any of these fields (matched by name) and a `functions` column. **Export:** every field, each function's answer, family members and custom fields.
 - **Dedicated staff:** when you accept a planner's RSVP desk request, you choose which 1–2 people from your team work on it. Only those people (and your admins) can see that wedding. The planner and the couple see their names ("Your guest managers: Neha, Ravi").
 
+### Reports, AI and the mobile app
+
+- **Reports & AI tab** on every wedding (`/admin/events/:id/insights`):
+  - **Needs attention:** alerts that always work, no AI needed. Guests who haven't replied (with days until the first function), VIPs not confirmed, "maybe" guests, invites not sent, missing IDs (main guests and adult family members), pickups in the next 3 days with no vehicle, parties with no hotel room, hotels over their room block, missing arrival details, overdue follow-ups, open guests with no owner, and special-care counts.
+  - **AI status report:** a headline, an executive summary, top risks, actions for the next 48 hours and ideas to delight guests, written from the live data. It is also included in the PDF.
+  - **Ask anything:** questions in plain language, e.g. "How many Jain guests arrive on 10 Dec and need a pickup?"
+  - **Downloads:**
+    - **Excel workbook:** Summary, Guests (every field and each function's answer), Functions, Family members, Rooming, Arrivals, Departures, Food, Calls.
+    - **Branded PDFs:** status report, guest list, rooming list, pickup sheet, drop sheet.
+- **AI WhatsApp messages** on each guest: an RSVP reminder, invitation, ID request, travel request, personal itinerary or thank-you, in English, Hinglish or Hindi. There's a one-tap "Send on WhatsApp" button.
+- **Smart fill for callers:** type rough notes in any language ("sangeet pe 3 log, 12 ko indigo 6E 234, jain, dadi ke liye wheelchair") and the AI fills in the RSVP for each function, travel, stay and food for the caller to check.
+- **Client dashboard:** the couple can download a PDF report and an Excel file. These versions leave out internal notes and the team's to-do list.
+- **Installable app (PWA):** open the site on Android (Chrome), iPhone (Safari: Share → Add to Home Screen) or a computer and tap **Install app**. It opens full-screen with its own icon, has shortcuts to "My follow-ups" and "Weddings", and shows an offline screen when there is no connection. Pages with guest data are never stored on the device.
+
+**Switching on AI:** set `ANTHROPIC_API_KEY` in `.env`. The model is Claude Opus 5 (`claude-opus-5`); set `AI_MODEL` to use a different one. If Claude declines a request, Anthropic automatically retries it on its recommended fallback model (`fallbacks: "default"`). Guest **phone numbers and ID numbers are never sent to the AI**; names, RSVPs, travel and notes are. Mention this AI processing in your privacy notice. Without a key, everything else works and the AI buttons explain how to switch it on.
+
 ### Screens
 
 | URL | Who | What |
@@ -154,6 +170,11 @@ src/server.js        app setup, login
 src/db.js            SQLite schema (events, guests, calls, users, activities) + migrations
 src/tenancy.js       who can see which company's weddings
 src/routes/admin.js  agency admin, team, assignment, RSVP-desk service, platform dashboard
+src/routes/smart.js  Reports & AI tab, Excel/PDF downloads, AI endpoints
+src/ai.js            Claude API client (model, fallbacks, errors)
+src/smart.js         rule-based alerts + AI summary, Q&A, WhatsApp drafts, call-note smart fill
+src/reports.js       Excel workbook (exceljs) and branded PDFs (pdfkit)
+public/sw.js         service worker for the installable app
 test/app.test.js     end-to-end tests (npm test), including data isolation between companies
 src/routes/rsvp.js   guest invitation / RSVP form
 src/routes/client.js client dashboard

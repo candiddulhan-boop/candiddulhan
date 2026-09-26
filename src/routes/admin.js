@@ -113,6 +113,9 @@ r.get('/events/:id', (req, res) => {
     </div>
     ${W.eventNav(e, 'guests', { owner })}
     ${serviceCard(req, e)}
+    ${(() => { const al = require('../smart').alerts(e); return al.length ? html`<div class="card"><div class="head"><h3>🚦 Needs attention</h3>
+      <a class="btn sm" href="/admin/events/${e.id}/insights">All alerts, AI report &amp; downloads →</a></div>
+      ${require('./smart').alertList(al, { limit: 3 })}</div>` : ''; })()}
     ${S.statCards(S.stats(e.id))}
     ${W.functionTable(e.id)}
 
@@ -448,6 +451,18 @@ r.get('/guests/:id', (req, res) => {
         <a class="btn" target="_blank" href="/i/${g.token}">Open RSVP page</a>
       </div></div>
     <p class="muted">${[g.relation, g.side, g.group_name, g.category, g.city].filter(Boolean).join(' · ')}</p>
+
+    ${require('../ai').enabled() ? html`<details class="card ai-card"><summary><strong>✨ Write a WhatsApp message with AI</strong>
+        <span class="muted">personalised from this guest’s RSVP, travel and stay</span></summary>
+      <form class="ai-msg form" data-ai-msg="/admin/guests/${g.id}/ai/message">
+        <div class="fields">
+          <label>Purpose<select name="purpose">${Object.entries({ reminder: 'RSVP reminder', invite: 'Personal invitation', id_request: 'Ask for IDs', travel: 'Ask for travel details', itinerary: 'Send itinerary', thanks: 'Thank you' }).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
+          <label>Language<select name="language"><option>English</option><option>Hinglish</option><option>Hindi</option></select></label>
+        </div>
+        <button class="primary sm">Write message</button>
+        <div class="ai-out" hidden><textarea rows="7"></textarea>
+          <div class="actions"><button type="button" class="btn sm" data-copy-area>Copy</button><a class="btn sm wa" target="_blank" data-wa>Send on WhatsApp</a></div></div>
+      </form></details>` : ''}
 
     <form method="post" action="/admin/guests/${g.id}" class="form card">
       ${fns.length ? html`<fieldset><legend>RSVP by function</legend>

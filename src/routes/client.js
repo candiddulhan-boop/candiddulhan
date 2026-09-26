@@ -62,7 +62,7 @@ r.get('/', (req, res) => {
   res.send(layout({ title: e.title, nav: false, event: e, body: html`
     <div class="head"><div><p class="eyebrow">Guest dashboard${e.is_platform ? '' : ` · ${e.org_name}`}</p><h1 class="couple">${e.title}</h1>
       <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p></div>
-      <div class="actions"><a class="btn" href="${base}/export.csv">Download guest list (CSV)</a></div></div>
+      <div class="actions"><a class="btn" href="${base}/report.pdf">⬇ PDF report</a><a class="btn" href="${base}/report.xlsx">⬇ Excel</a></div></div>
     ${staff.length ? html`<p class="muted">Your guest managers: <strong>${staff.map((x) => x.name).join(', ')}</strong></p>` : ''}
     ${S.statCards(S.stats(e.id))}
     ${W.functionTable(e.id)}

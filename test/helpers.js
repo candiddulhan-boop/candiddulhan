@@ -8,6 +8,7 @@ function boot() {
   process.env.DATA_DIR = dataDir;
   process.env.ADMIN_PASSWORD = 'owner-pass';
   process.env.API_KEY = 'test-key';
+  delete process.env.ANTHROPIC_API_KEY; // AI is faked in tests; never call the real API
   const app = require('../src/server');
   const db = require('../src/db');
   const ctx = { db, base: '' };

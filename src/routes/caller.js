@@ -7,6 +7,8 @@ const { html, fmtDate } = require('../util');
 const S = require('../shared');
 const T = require('../tenancy');
 const W = require('../wedding');
+const F = require('../fields');
+const AI = require('../ai');
 
 const r = express.Router();
 r.use(requireRole('admin', 'caller'));
@@ -90,7 +92,7 @@ r.get('/guest/:id', (req, res) => {
       <h3>Log this call</h3>
       <label>Outcome<select name="outcome" required>${Object.entries(S.OUTCOMES).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
       ${fns.length ? html`<fieldset><legend>RSVP by function</legend>
-        ${fns.map((f) => { const a = answers.get(f.id); return html`<div class="row">
+        ${fns.map((f) => { const a = answers.get(f.id); return html`<div class="row fn-row">
           <label>${f.name} <small>(${S.STATUS_LABEL[a.rsvp]})</small><select name="fn_rsvp_${f.id}"><option value="">— no change —</option>
             ${Object.entries(S.STATUS_LABEL).filter(([k]) => k !== 'pending').map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
           <label>People<input type="number" name="fn_pax_${f.id}" min="0" max="${g.max_pax}" value="${a.pax ?? ''}"></label></div>`; })}
@@ -98,9 +100,16 @@ r.get('/guest/:id', (req, res) => {
       : html`<div class="row"><label>Update RSVP<select name="rsvp_status"><option value="">— no change —</option>
           ${Object.entries(S.STATUS_LABEL).filter(([k]) => k !== 'pending').map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
         <label>People attending<input type="number" name="pax" min="0" max="${g.max_pax}" value="${g.pax ?? ''}"></label></div>`}
-      <div class="row"><label>Arrival date<input type="date" name="arrival_date" value="${g.arrival_date || ''}"></label>
-        <label>Duration (min)<input type="number" name="duration_min" min="0" step="0.5"></label></div>
-      <label>Notes<textarea name="notes" rows="3" placeholder="Coming with spouse, needs pickup from airport…"></textarea></label>
+      <label>Duration (min)<input type="number" name="duration_min" min="0" step="0.5"></label>
+      <label>Notes<textarea name="notes" rows="3" placeholder="Coming with spouse, needs pickup from airport…" data-notes></textarea></label>
+      ${AI.enabled() ? html`<div class="smart-fill"><button type="button" class="btn sm ai-btn" data-smart-fill="/caller/guest/${g.id}/ai/extract">✨ Smart fill from notes</button>
+        <small class="muted">Type rough notes in English/Hindi/Hinglish — AI fills RSVP, travel and food below for you to check.</small>
+        <div class="smart-result muted small" hidden></div></div>` : ''}
+      <details class="travel-fields"><summary>Travel, stay &amp; food</summary><div class="fields">
+        ${['arrival_date', 'arrival_time', 'arrival_mode', 'arrival_details', 'arrival_point', 'pickup_required', 'departure_date', 'departure_time',
+          'departure_mode', 'departure_number', 'drop_required', 'needs_stay', 'dietary', 'allergies', 'special_needs', 'kids']
+          .map((k) => html`<label>${F.FIELD[k].label}${F.input(F.FIELD[k], g[k])}</label>`)}
+      </div></details>
       <label>Follow up on <small>(leave empty if nothing more to do)</small>
         <input type="datetime-local" name="follow_up_at" data-followup></label>
       <div class="chips"><button type="button" data-in="2h">In 2 hours</button><button type="button" data-in="tomorrow">Tomorrow 11 am</button>
@@ -144,6 +153,10 @@ r.post('/guest/:id', S.recordingUpload.single('recording'), (req, res) => {
       .run(b.rsvp_status, b.pax === '' || b.pax == null ? null : Number(b.pax), b.arrival_date || null, g.id);
     if (b.rsvp_status !== g.rsvp_status) S.logActivity(g.event_id, g.id, who, 'rsvp', `RSVP updated on call: ${S.STATUS_LABEL[b.rsvp_status]}`);
   }
+
+  // Travel / stay / food captured on the call (form is pre-filled, so saving all keeps existing values).
+  F.update(g.id, F.parse(b, ['arrival_date', 'arrival_time', 'arrival_mode', 'arrival_details', 'arrival_point', 'pickup_required',
+    'departure_date', 'departure_time', 'departure_mode', 'departure_number', 'drop_required', 'needs_stay', 'dietary', 'allergies', 'special_needs', 'kids']));
 
   // Logging a call resolves the old follow-up; a new one is set only if the caller chose a time.
   const followUp = S.followUpToDb(b.follow_up_at);
