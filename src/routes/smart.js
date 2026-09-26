@@ -44,10 +44,11 @@ function alertList(alerts, { limit } = {}) {
 }
 
 function summaryCard(e, ai) {
-  if (!AI.enabled()) return html`<div class="card ai-card off"><h3>✨ AI status report</h3>
+  if (!AI.enabled() && !ai) return html`<div class="card ai-card off"><h3>✨ AI status report</h3>
     <p class="muted">Switch on AI by adding <code>ANTHROPIC_API_KEY</code> on the server. You’ll get a written executive summary, risks, next actions and guest-experience ideas — and it goes into the PDF report.</p></div>`;
   return html`<div class="card ai-card"><div class="head"><h3>✨ AI status report</h3>
-      <form method="post" action="/admin/events/${e.id}/ai/summary" data-busy="Writing report…"><button class="btn sm">${ai ? 'Refresh' : 'Generate'}</button></form></div>
+      ${AI.enabled() ? html`<form method="post" action="/admin/events/${e.id}/ai/summary" data-busy="Writing report…"><button class="btn sm">${ai ? 'Refresh' : 'Generate'}</button></form>`
+        : html`<small class="muted">Add <code>ANTHROPIC_API_KEY</code> to refresh</small>`}</div>
     ${ai ? html`<p class="ai-headline">${ai.headline}</p><p>${ai.summary}</p>
       <div class="grid2">
         <div><h4>Top risks</h4><ul>${ai.risks.map((x) => html`<li><strong>${x.title}</strong> — ${x.detail}</li>`)}</ul></div>
