@@ -5,6 +5,8 @@ const layout = require('../layout');
 const { html, maskId, fmtDate } = require('../util');
 const { sign, safeEqual } = require('../auth');
 const S = require('../shared');
+const W = require('../wedding');
+const T = require('../tenancy');
 
 const r = express.Router({ mergeParams: true });
 
@@ -47,7 +49,13 @@ r.get('/', (req, res) => {
   const e = req.event, base = `/c/${e.client_token}`;
   const filter = { status: req.query.status, side: req.query.side, q: req.query.q };
   const guests = S.listGuests(e.id, filter);
-  const tab = ['calls', 'activity'].includes(req.query.tab) ? req.query.tab : 'guests';
+  const tab = ['calls', 'activity', 'rooming', 'transport'].includes(req.query.tab) ? req.query.tab : 'guests';
+  const fns = W.functionsOf(e.id);
+  const answers = W.guestFunctionMap(e.id);
+  const memberCount = new Map(db.prepare(`SELECT m.guest_id, COUNT(*) n FROM guest_members m JOIN guests g ON g.id = m.guest_id
+    WHERE g.event_id = ? GROUP BY m.guest_id`).all(e.id).map((r) => [r.guest_id, r.n]));
+  const staff = e.service_status === 'active' ? T.eventStaff(e.id) : [];
+  const t = (key, label) => html`<a class="${tab === key ? 'on' : ''}" href="${base}${key === 'guests' ? '' : `?tab=${key}`}">${label}</a>`;
   // Clients see guest-facing activity only (not the team's internal notes or assignments).
   const activity = tab === 'activity' ? db.prepare(`SELECT a.*, g.name guest_name FROM activities a JOIN guests g ON g.id = a.guest_id
     WHERE a.event_id = ? AND a.kind IN ('rsvp', 'id', 'invite') ORDER BY a.created_at DESC, a.id DESC LIMIT 200`).all(e.id) : [];
@@ -55,9 +63,12 @@ r.get('/', (req, res) => {
     <div class="head"><div><p class="eyebrow">Guest dashboard${e.is_platform ? '' : ` · ${e.org_name}`}</p><h1 class="couple">${e.title}</h1>
       <p class="muted">${[fmtDate(e.event_date), e.venue, e.city].filter(Boolean).join(' · ')}</p></div>
       <div class="actions"><a class="btn" href="${base}/export.csv">Download guest list (CSV)</a></div></div>
+    ${staff.length ? html`<p class="muted">Your guest managers: <strong>${staff.map((x) => x.name).join(', ')}</strong></p>` : ''}
     ${S.statCards(S.stats(e.id))}
-    <nav class="tabs"><a class="${tab === 'guests' ? 'on' : ''}" href="${base}">Guests</a><a class="${tab === 'activity' ? 'on' : ''}" href="${base}?tab=activity">Latest updates</a><a class="${tab === 'calls' ? 'on' : ''}" href="${base}?tab=calls">Calls &amp; recordings</a></nav>
+    ${W.functionTable(e.id)}
+    <nav class="tabs">${t('guests', 'Guests')}${t('activity', 'Latest updates')}${t('rooming', 'Rooming')}${t('transport', 'Arrivals')}${t('calls', 'Calls &amp; recordings')}</nav>
     ${tab === 'activity' ? html`<div class="card">${S.timeline(activity, { showGuest: true })}</div>`
+    : tab === 'rooming' ? roomingTable(e) : tab === 'transport' ? arrivalsTable(e)
     : tab === 'calls' ? S.callsTable(S.eventCalls(e.id), (c) => `${base}/calls/${c.id}/recording`) : html`
       ${S.filterBar(e.id, filter)}
       <div class="table-wrap"><table class="guests">
@@ -65,9 +76,9 @@ r.get('/', (req, res) => {
         ${guests.map((g) => html`<tr>
           <td><strong>${g.name}</strong><br><small class="muted">${g.phone || ''}</small>${g.guest_notes ? html`<br><small class="quote">“${g.guest_notes}”</small>` : ''}</td>
           <td>${g.side || ''}<br><small class="muted">${g.group_name || ''}</small></td>
-          <td>${S.badge(g.rsvp_status)}</td>
-          <td>${g.rsvp_status === 'yes' ? g.pax ?? 1 : '–'} / ${g.max_pax}</td>
-          <td>${fmtDate(g.arrival_date)}${g.arrival_mode || g.arrival_details ? html`<br><small class="muted">${[g.arrival_mode, g.arrival_details].filter(Boolean).join(' · ')}</small>` : ''}</td>
+          <td>${S.badge(g.rsvp_status)}${fns.length ? html`<br>${W.functionChips(fns, answers.get(g.id))}` : ''}</td>
+          <td>${g.rsvp_status === 'yes' ? g.pax ?? 1 : '–'} / ${g.max_pax}${memberCount.get(g.id) ? html`<br><small class="muted">${memberCount.get(g.id)} named</small>` : ''}</td>
+          <td>${fmtDate(g.arrival_date)}${g.arrival_mode || g.arrival_details ? html`<br><small class="muted">${[g.arrival_time, g.arrival_mode, g.arrival_details].filter(Boolean).join(' · ')}</small>` : ''}</td>
           <td>${fmtDate(g.departure_date)}</td>
           <td>${g.needs_stay == null ? '' : g.needs_stay ? 'Yes' : 'No'}</td>
           <td>${g.dietary || ''}</td>
@@ -77,10 +88,36 @@ r.get('/', (req, res) => {
     <p class="muted small center">This link is private — please don’t forward it.</p>` }));
 });
 
+function roomingTable(e) {
+  const rows = db.prepare(`SELECT g.*, h.name hotel_name FROM guests g LEFT JOIN hotels h ON h.id = g.hotel_id
+    WHERE g.event_id = ? AND g.rsvp_status IN ('yes','maybe') AND (g.needs_stay = 1 OR g.hotel_id IS NOT NULL)
+    ORDER BY h.name IS NULL, h.name, g.room_no, g.name`).all(e.id);
+  if (!rows.length) return html`<p class="muted">No stays planned yet.</p>`;
+  return html`<div class="table-wrap"><table><tr><th>Hotel</th><th>Room</th><th>Guest</th><th>People</th><th>Check-in</th><th>Check-out</th></tr>
+    ${rows.map((g) => html`<tr><td>${g.hotel_name || html`<span class="overdue">To be assigned</span>`}</td><td>${[g.room_type, g.room_no].filter(Boolean).join(' · ')}</td>
+      <td><strong>${g.name}</strong></td><td>${g.pax ?? g.max_pax}</td><td>${fmtDate(g.check_in || g.arrival_date)}</td><td>${fmtDate(g.check_out || g.departure_date)}</td></tr>`)}
+  </table></div>`;
+}
+
+function arrivalsTable(e) {
+  const rows = db.prepare(`SELECT * FROM guests WHERE event_id = ? AND rsvp_status IN ('yes','maybe') AND arrival_date IS NOT NULL AND arrival_date != ''
+    ORDER BY arrival_date, COALESCE(arrival_time, '99'), name`).all(e.id);
+  if (!rows.length) return html`<p class="muted">No arrival details yet.</p>`;
+  return html`<div class="table-wrap"><table><tr><th>Arrival</th><th>Guest</th><th>People</th><th>Travel</th><th>Pickup</th><th>Departure</th></tr>
+    ${rows.map((g) => html`<tr><td><strong>${fmtDate(g.arrival_date)}</strong> ${g.arrival_time || ''}</td><td>${g.name}</td><td>${g.pax ?? g.max_pax}</td>
+      <td>${[g.arrival_mode, g.arrival_details, g.arrival_point].filter(Boolean).join(' · ')}</td>
+      <td>${g.pickup_required === 1 ? g.pickup_status || 'Pending' : g.pickup_required === 0 ? 'Not needed' : ''}</td>
+      <td>${fmtDate(g.departure_date)} ${g.departure_time || ''}</td></tr>`)}
+  </table></div>`;
+}
+
+r.get('/members/:mid/id-file', (req, res) => S.sendUpload(res, 'ids', db.prepare(`SELECT m.id_file FROM guest_members m JOIN guests g ON g.id = m.guest_id
+  WHERE m.id = ? AND g.event_id = ?`).get(req.params.mid, req.event.id)?.id_file));
+
 r.get('/export.csv', (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="guest-list.csv"');
-  res.send('﻿' + S.guestsCsv(req.event.id, { withIdNumbers: true }));
+  res.send('﻿' + S.guestsCsv(req.event.id, { withIdNumbers: true, forClient: true }));
 });
 
 r.get('/guests/:id/id-file', (req, res) => S.sendUpload(res, 'ids', guestOf(req)?.id_file));

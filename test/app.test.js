@@ -2,47 +2,14 @@
 // Run with: npm test
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const { boot, idFrom } = require('./helpers');
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rsvp-test-'));
-process.env.DATA_DIR = dataDir;
-process.env.ADMIN_PASSWORD = 'owner-pass';
-process.env.API_KEY = 'test-key';
-
-const app = require('../src/server');
-const db = require('../src/db');
-let server, base;
-
-before(async () => {
-  server = app.listen(0);
-  await new Promise((r) => server.once('listening', r));
-  base = `http://127.0.0.1:${server.address().port}`;
-});
-after(() => { server.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
-
-// Tiny cookie-keeping client.
-function client() {
-  let cookie = '';
-  const req = async (method, url, form) => {
-    const res = await fetch(base + url, {
-      method, redirect: 'manual',
-      headers: { cookie, ...(form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
-      body: form ? new URLSearchParams(form).toString() : undefined,
-    });
-    const set = res.headers.getSetCookie?.() || [];
-    for (const c of set) {
-      const [pair] = c.split(';');
-      const [k] = pair.split('=');
-      cookie = [...cookie.split('; ').filter((x) => x && !x.startsWith(`${k}=`)), pair].join('; ');
-    }
-    return { status: res.status, location: res.headers.get('location') || '', text: await res.text() };
-  };
-  return { get: (u) => req('GET', u), post: (u, f = {}) => req('POST', u, f) };
-}
-
-const idFrom = (loc) => Number(/\/events\/(\d+)/.exec(loc)?.[1]);
+const ctx = boot();
+const { db } = ctx;
+const client = () => ctx.client();
+let base;
+before(async () => { await ctx.start(); base = ctx.base; });
+after(ctx.stop);
 
 let owner, acme, bloom, acmeEvent, bloomEvent, acmeGuest;
 

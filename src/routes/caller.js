@@ -6,6 +6,7 @@ const { requireRole } = require('../auth');
 const { html, fmtDate } = require('../util');
 const S = require('../shared');
 const T = require('../tenancy');
+const W = require('../wedding');
 
 const r = express.Router();
 r.use(requireRole('admin', 'caller'));
@@ -76,6 +77,8 @@ r.get('/guest/:id', (req, res) => {
   if (!e) return;
   const g = db.prepare('SELECT g.*, u.name assignee FROM guests g LEFT JOIN users u ON u.id = g.assigned_to WHERE g.id = ?').get(req.params.id);
   const calls = db.prepare('SELECT c.*, ? guest_name FROM calls c WHERE guest_id = ? ORDER BY called_at DESC').all(g.name, g.id);
+  const answers = W.guestFunctions(g.id);
+  const fns = W.functionsOf(e.id).filter((f) => answers.has(f.id));
   res.send(page(req, g.name, html`
     <p><a href="/caller/${e.id}">← ${e.title}</a></p>
     <div class="head"><h1>${g.name} ${S.badge(g.rsvp_status)}</h1>
@@ -86,9 +89,15 @@ r.get('/guest/:id', (req, res) => {
     <form method="post" action="/caller/guest/${g.id}" enctype="multipart/form-data" class="form card">
       <h3>Log this call</h3>
       <label>Outcome<select name="outcome" required>${Object.entries(S.OUTCOMES).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
-      <div class="row"><label>Update RSVP<select name="rsvp_status"><option value="">— no change —</option>
+      ${fns.length ? html`<fieldset><legend>RSVP by function</legend>
+        ${fns.map((f) => { const a = answers.get(f.id); return html`<div class="row">
+          <label>${f.name} <small>(${S.STATUS_LABEL[a.rsvp]})</small><select name="fn_rsvp_${f.id}"><option value="">— no change —</option>
+            ${Object.entries(S.STATUS_LABEL).filter(([k]) => k !== 'pending').map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
+          <label>People<input type="number" name="fn_pax_${f.id}" min="0" max="${g.max_pax}" value="${a.pax ?? ''}"></label></div>`; })}
+        </fieldset>`
+      : html`<div class="row"><label>Update RSVP<select name="rsvp_status"><option value="">— no change —</option>
           ${Object.entries(S.STATUS_LABEL).filter(([k]) => k !== 'pending').map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
-        <label>People attending<input type="number" name="pax" min="0" max="${g.max_pax}" value="${g.pax ?? ''}"></label></div>
+        <label>People attending<input type="number" name="pax" min="0" max="${g.max_pax}" value="${g.pax ?? ''}"></label></div>`}
       <div class="row"><label>Arrival date<input type="date" name="arrival_date" value="${g.arrival_date || ''}"></label>
         <label>Duration (min)<input type="number" name="duration_min" min="0" step="0.5"></label></div>
       <label>Notes<textarea name="notes" rows="3" placeholder="Coming with spouse, needs pickup from airport…"></textarea></label>
@@ -118,7 +127,18 @@ r.post('/guest/:id', S.recordingUpload.single('recording'), (req, res) => {
     b.notes || null, b.duration_min ? Math.round(Number(b.duration_min) * 60) : null, req.file?.filename || null);
   S.logActivity(g.event_id, g.id, who, 'call', `Call: ${S.OUTCOMES[outcome] || 'logged'}${b.notes ? ` — ${b.notes}` : ''}${req.file ? ' (recording attached)' : ''}`);
 
-  if (S.STATUS_LABEL[b.rsvp_status]) {
+  const answers = W.guestFunctions(g.id);
+  const fns = W.functionsOf(g.event_id).filter((f) => answers.has(f.id));
+  const changed = fns.filter((f) => S.STATUS_LABEL[b[`fn_rsvp_${f.id}`]]);
+  for (const f of changed) {
+    const pax = b[`fn_pax_${f.id}`] === '' || b[`fn_pax_${f.id}`] == null ? null : Math.min(g.max_pax, Number(b[`fn_pax_${f.id}`]));
+    W.setFunctionAnswer(g.id, f.id, b[`fn_rsvp_${f.id}`], pax);
+  }
+  if (changed.length) {
+    W.syncOverall(g.id);
+    S.logActivity(g.event_id, g.id, who, 'rsvp', `RSVP updated on call: ${changed.map((f) => `${f.name}: ${S.STATUS_LABEL[b[`fn_rsvp_${f.id}`]]}`).join(', ')}`);
+  }
+  if (!fns.length && S.STATUS_LABEL[b.rsvp_status]) {
     db.prepare(`UPDATE guests SET rsvp_status=?, pax=COALESCE(?, pax), arrival_date=COALESCE(?, arrival_date),
       responded_at=COALESCE(responded_at, datetime('now')) WHERE id=?`)
       .run(b.rsvp_status, b.pax === '' || b.pax == null ? null : Number(b.pax), b.arrival_date || null, g.id);

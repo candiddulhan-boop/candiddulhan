@@ -6,6 +6,8 @@ const { requireRole, hashPassword } = require('../auth');
 const { html, token, parseCsv, maskId, fmtDate } = require('../util');
 const S = require('../shared');
 const T = require('../tenancy');
+const W = require('../wedding');
+const F = require('../fields');
 
 const r = express.Router();
 r.use(requireRole('admin'));
@@ -90,6 +92,8 @@ r.get('/events/:id', (req, res) => {
   const filter = { status: req.query.status, side: req.query.side, q: req.query.q, assigned: req.query.assigned, due: req.query.due };
   const guests = S.listGuests(e.id, filter);
   const team = T.eventTeam(e);
+  const fns = W.functionsOf(e.id);
+  const answers = W.guestFunctionMap(e.id);
   const recent = db.prepare(`SELECT a.*, g.name guest_name FROM activities a LEFT JOIN guests g ON g.id = a.guest_id
     WHERE a.event_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT 15`).all(e.id);
   res.send(page(req, e.title, html`
@@ -107,8 +111,10 @@ r.get('/events/:id', (req, res) => {
       <div class="copyrow"><input readonly value="${S.clientUrl(req, e)}"><button type="button" data-copy>Copy</button>
       <a class="btn" target="_blank" href="${S.clientUrl(req, e)}">Open</a></div>
     </div>
+    ${W.eventNav(e, 'guests', { owner })}
     ${serviceCard(req, e)}
     ${S.statCards(S.stats(e.id))}
+    ${W.functionTable(e.id)}
 
     <div class="grid-crm">
       <div class="card"><h3>Team on this wedding</h3>${S.teamTable(S.teamStats(e.id, team))}</div>
@@ -127,7 +133,7 @@ r.get('/events/:id', (req, res) => {
       </details>
       <details class="card"><summary><strong>⇪ Import guests from CSV</strong></summary>
         <form method="post" action="/admin/events/${e.id}/import" enctype="multipart/form-data" class="form">
-          <p class="muted">Columns (header row required): <code>name, phone, side, group, max_pax, email</code>. Export from Google Sheets / Excel as CSV. Guests with a phone already on the list are skipped.</p>
+          <p class="muted">Header row required. Basic columns: <code>name, phone, side, group, max_pax, email</code>. Optional: any guest field by name (e.g. <code>relation, city, category, arrival date, room type</code>) and <code>functions</code> (e.g. “Sangeet, Wedding”; empty = all). Guests with a phone already on the list are skipped.</p>
           <input type="file" name="file" accept=".csv,text/csv" required>
           <button class="primary">Import</button>
         </form>
@@ -144,15 +150,21 @@ r.get('/events/:id', (req, res) => {
       <button name="mode" value="selected">Assign selected</button>
       <button name="mode" value="auto" class="btn" data-confirm-click="Share all unassigned guests who haven’t replied equally among active team members?">⚖ Auto-split unassigned</button>
     </div>` : ''}
+    ${fns.length ? html`<div class="bulkbar">
+      <span><strong data-selcount>0</strong> selected</span>
+      <select name="function_id"><option value="">Function…</option>${fns.map((f) => html`<option value="${f.id}">${f.name}</option>`)}</select>
+      <button name="mode" value="invite_fn">Invite to function</button>
+      <button name="mode" value="uninvite_fn">Remove from function</button>
+    </div>` : ''}
     <div class="table-wrap"><table class="guests">
-      <tr>${team.length ? html`<th><input type="checkbox" data-selall aria-label="Select all"></th>` : ''}<th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls / follow-up</th><th>Owner</th><th>Invite</th></tr>
+      <tr>${team.length || fns.length ? html`<th><input type="checkbox" data-selall aria-label="Select all"></th>` : ''}<th>Guest</th><th>Side / group</th><th>RSVP</th><th>People</th><th>Arrival</th><th>ID</th><th>Calls / follow-up</th><th>Owner</th><th>Invite</th></tr>
       ${guests.map((g) => html`<tr>
-        ${team.length ? html`<td><input type="checkbox" name="guest_ids" value="${g.id}" data-sel></td>` : ''}
+        ${team.length || fns.length ? html`<td><input type="checkbox" name="guest_ids" value="${g.id}" data-sel></td>` : ''}
         <td><a href="/admin/guests/${g.id}"><strong>${g.name}</strong></a><br><small class="muted">${g.phone || ''}</small></td>
         <td>${g.side || ''}<br><small class="muted">${g.group_name || ''}</small></td>
-        <td>${S.badge(g.rsvp_status)}</td>
+        <td>${S.badge(g.rsvp_status)}${fns.length ? html`<br>${W.functionChips(fns, answers.get(g.id))}` : ''}</td>
         <td>${g.rsvp_status === 'yes' ? g.pax ?? 1 : '–'} / ${g.max_pax}</td>
-        <td>${fmtDate(g.arrival_date)}${g.arrival_mode ? html`<br><small class="muted">${g.arrival_mode}</small>` : ''}</td>
+        <td>${fmtDate(g.arrival_date)}${g.arrival_mode ? html`<br><small class="muted">${[g.arrival_time, g.arrival_mode].filter(Boolean).join(' · ')}</small>` : ''}</td>
         <td>${g.id_file ? html`<a href="/admin/guests/${g.id}/id-file" target="_blank">${g.id_type || 'View'}</a>` : g.id_type ? g.id_type : '–'}</td>
         <td>${g.call_count || ''}${g.last_outcome ? html`<br><small class="muted">${S.OUTCOMES[g.last_outcome] || g.last_outcome}</small>` : ''}
           ${g.follow_up_at ? html`<br><small class="${S.isOverdue(g.follow_up_at) ? 'overdue' : 'muted'}">⏰ ${fmtDate(g.follow_up_at)}</small>` : ''}</td>
@@ -178,15 +190,22 @@ r.get('/events/:id', (req, res) => {
 function serviceCard(req, e) {
   const u = req.user;
   if (u.platform && e.org_id === u.org_id) return ''; // our own wedding: we are the service
+  const staff = T.eventStaff(e.id);
   if (u.platform) {
     const org = db.prepare('SELECT * FROM orgs WHERE id = ?').get(e.org_id);
+    const ids = new Set(staff.map((x) => x.id));
     return html`<div class="card service active"><strong>🤝 Partner wedding</strong> for <strong>${org.name}</strong>
       ${org.contact_name || org.phone ? html` · ${[org.contact_name, org.phone].filter(Boolean).join(' · ')}` : ''}
-      ${e.service_note ? html`<p class="muted small">Their brief: ${e.service_note}</p>` : ''}</div>`;
+      ${e.service_note ? html`<p class="muted small">Their brief: ${e.service_note}</p>` : ''}
+      ${u.role === 'admin' ? html`<form method="post" action="/admin/platform/events/${e.id}/staff" class="inline-form staff-form">
+        <span>Dedicated staff:</span>${T.orgTeam(db.platformOrgId).map((p) => html`<label class="check inline-check">
+          <input type="checkbox" name="staff" value="${p.id}" ${ids.has(p.id) ? 'checked' : ''}> ${p.name}</label>`)}
+        <button class="sm">Save</button></form>` : html`<p class="muted small">Dedicated staff: ${staff.map((x) => x.name).join(', ')}</p>`}</div>`;
   }
   const st = e.service_status;
   if (st === 'active') return html`<div class="card service active"><strong>🤝 Candid Dulhan RSVP desk is working on this wedding.</strong>
-    <span class="muted">Their callers can see and call your guests; everything they do shows up here and on your client’s dashboard.</span>
+    ${staff.length ? html`<span>Your dedicated guest managers: <strong>${staff.map((x) => x.name).join(', ')}</strong>.</span>` : ''}
+    <span class="muted">They call your guests on your behalf; everything they do shows up here and on your client’s dashboard.</span>
     <form method="post" action="/admin/events/${e.id}/service" class="inline" data-confirm="Stop the RSVP desk service for this wedding? Their team will lose access.">
       <button name="action" value="end" class="btn sm">End service</button></form></div>`;
   if (st === 'requested') return html`<div class="card service"><strong>⏳ RSVP desk requested.</strong>
@@ -221,6 +240,7 @@ r.post('/events/:id/service', (req, res) => {
     set('none');
     // Candid Dulhan callers lose access, so hand their open guests back.
     db.prepare('UPDATE guests SET assigned_to = NULL WHERE event_id = ? AND assigned_to IN (SELECT id FROM users WHERE org_id = ?)').run(e.id, db.platformOrgId);
+    T.setEventStaff(e.id, []);
     S.logActivity(e.id, null, u.name, 'service', 'Ended the RSVP desk service');
   } else return back(res, `/admin/events/${e.id}`, 'That action isn’t available right now');
   back(res, `/admin/events/${e.id}`, 'Updated');
@@ -235,6 +255,20 @@ r.post('/events/:id/assign', (req, res) => {
   let n = 0;
   db.exec('BEGIN');
   try {
+    if (req.body.mode === 'invite_fn' || req.body.mode === 'uninvite_fn') {
+      const f = db.prepare('SELECT * FROM functions WHERE id = ? AND event_id = ?').get(req.body.function_id, e.id);
+      const ids = [].concat(req.body.guest_ids || []).map(Number).filter(Boolean);
+      if (!f || !ids.length) throw Object.assign(new Error('Pick guests and a function'), { user: true });
+      const inGuest = db.prepare('SELECT 1 FROM guests WHERE id = ? AND event_id = ?');
+      for (const id of ids) {
+        if (!inGuest.get(id, e.id)) continue;
+        if (req.body.mode === 'invite_fn') n += db.prepare('INSERT OR IGNORE INTO guest_functions (guest_id, function_id) VALUES (?,?)').run(id, f.id).changes;
+        else n += db.prepare('DELETE FROM guest_functions WHERE guest_id = ? AND function_id = ?').run(id, f.id).changes;
+        W.syncOverall(id);
+      }
+      db.exec('COMMIT');
+      return back(res, `/admin/events/${e.id}`, `${req.body.mode === 'invite_fn' ? 'Invited' : 'Removed'} ${n} guest${n === 1 ? '' : 's'} ${req.body.mode === 'invite_fn' ? 'to' : 'from'} ${f.name}`);
+    }
     if (req.body.mode === 'auto') {
       const callers = team.filter((u) => u.role === 'caller').length ? team.filter((u) => u.role === 'caller') : team;
       if (!callers.length) throw Object.assign(new Error('Add team members first'), { user: true });
@@ -275,7 +309,7 @@ r.get('/events/:id/settings', (req, res) => {
   if (!e) return;
   if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   res.send(page(req, `Settings · ${e.title}`, html`
-    <p><a href="/admin/events/${e.id}">← ${e.title}</a></p><h1>Wedding settings</h1>
+    <h1>${e.title}</h1>${W.eventNav(e, 'settings', { owner: true })}
     <form method="post" action="/admin/events/${e.id}/settings" class="form card">${eventForm(e)}
       <label class="check"><input type="checkbox" name="rotate_client_link" value="1"> Generate a new client dashboard link (the old link stops working)</label>
       <button class="primary">Save</button></form>`));
@@ -296,6 +330,7 @@ r.post('/events/:id/delete', (req, res) => {
   if (!e) return;
   if (!T.ownsEvent(req.user, e)) return back(res, `/admin/events/${e.id}`, 'Only the company that owns this wedding can do that');
   for (const g of db.prepare('SELECT id_file FROM guests WHERE event_id = ?').all(e.id)) S.removeUpload('ids', g.id_file);
+  for (const m of db.prepare('SELECT m.id_file FROM guest_members m JOIN guests g ON g.id = m.guest_id WHERE g.event_id = ?').all(e.id)) S.removeUpload('ids', m.id_file);
   for (const c of db.prepare('SELECT recording_file FROM calls WHERE event_id = ?').all(e.id)) S.removeUpload('recordings', c.recording_file);
   db.prepare('DELETE FROM events WHERE id = ?').run(e.id);
   back(res, '/admin', `Deleted ${e.title}`);
@@ -320,6 +355,7 @@ r.post('/events/:id/guests', (req, res) => {
   const b = req.body;
   const info = insertGuest.run(e.id, b.name.trim(), b.phone?.trim() || null, b.email?.trim() || null, b.side || null,
     b.group_name?.trim() || null, Math.max(1, Number(b.max_pax) || 1), token());
+  W.inviteGuest(info.lastInsertRowid, W.functionsOf(e.id).map((f) => f.id));
   S.logActivity(e.id, info.lastInsertRowid, req.user.name, 'import', 'Added to guest list');
   back(res, `/admin/events/${e.id}`, `Added ${b.name.trim()}`);
 });
@@ -338,6 +374,12 @@ r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
     pax: col('maxpax', 'pax', 'people', 'count', 'guests', 'members'),
   };
   if (ix.name < 0) return back(res, `/admin/events/${e.id}`, 'CSV needs a "name" column');
+  // Any other column whose header matches a built-in field label or key is imported too.
+  const norm = (x) => x.toLowerCase().replace(/[^a-z]/g, '');
+  const extra = F.GUEST_FIELDS.filter((f) => !['name', 'phone', 'email', 'side', 'group_name', 'max_pax', 'hotel_id'].includes(f.key))
+    .map((f) => [f, head.findIndex((h) => h === norm(f.key) || h === norm(f.label))]).filter(([, i]) => i >= 0);
+  const fnCol = col('functions', 'invitedto', 'events');
+  const fns = W.functionsOf(e.id);
   const existing = new Set(db.prepare('SELECT phone FROM guests WHERE event_id = ? AND phone IS NOT NULL').all(e.id)
     .map((g) => g.phone.replace(/\D/g, '').slice(-10)));
   let added = 0, skipped = 0;
@@ -350,9 +392,13 @@ r.post('/events/:id/import', csvUpload.single('file'), (req, res) => {
       if (!name || (key && existing.has(key))) { skipped++; continue; }
       if (key) existing.add(key);
       const side = get(row, ix.side);
-      insertGuest.run(e.id, name, phone || null, get(row, ix.email) || null,
+      const gid = Number(insertGuest.run(e.id, name, phone || null, get(row, ix.email) || null,
         /^b/i.test(side) ? 'Bride' : /^g/i.test(side) ? 'Groom' : side || null,
-        get(row, ix.group) || null, Math.max(1, parseInt(get(row, ix.pax), 10) || 1), token());
+        get(row, ix.group) || null, Math.max(1, parseInt(get(row, ix.pax), 10) || 1), token()).lastInsertRowid);
+      if (extra.length) F.update(gid, F.parse(Object.fromEntries(extra.map(([f, i]) => [f.key, f.options === F.FIELD.needs_stay.options
+        ? ({ yes: '1', y: '1', no: '0', n: '0' }[get(row, i).toLowerCase()] ?? '') : get(row, i)])), extra.map(([f]) => f.key)));
+      const wanted = fnCol >= 0 && get(row, fnCol) ? get(row, fnCol).toLowerCase().split(/[,;/]/).map((x) => x.trim()) : null;
+      W.inviteGuest(gid, fns.filter((f) => !wanted || wanted.includes(f.name.toLowerCase())).map((f) => f.id));
       added++;
     }
     if (added) S.logActivity(e.id, null, req.user.name, 'import', `Imported ${added} guest${added === 1 ? '' : 's'} from CSV`);
@@ -375,37 +421,69 @@ r.get('/guests/:id', (req, res) => {
   if (!g) return;
   const calls = db.prepare('SELECT c.*, ? guest_name FROM calls c WHERE guest_id = ? ORDER BY called_at DESC').all(g.name, g.id);
   const team = T.eventTeam(e);
+  const hotels = F.hotelsOf(e.id);
+  const fns = W.functionsOf(e.id);
+  const answers = W.guestFunctions(g.id);
+  const members = W.membersOf(g.id);
+  const cfs = F.customFields(e.id);
+  const cvals = F.customValues(g.id);
   const sel = (name, opts, v) => html`<select name="${name}">${opts.map(([k, l]) => html`<option value="${k}" ${String(v ?? '') === String(k) ? 'selected' : ''}>${l}</option>`)}</select>`;
+  const memberRow = (m = {}) => html`
+    <div class="fields">
+      <label>Name<input name="name" value="${m.name || ''}" ${m.id ? '' : 'required'}></label>
+      <label>Relation<input name="relation" value="${m.relation || ''}" placeholder="Wife, son…"></label>
+      <label>Age group${sel('age_group', [['', ''], ['Adult', 'Adult'], ['Child', 'Child'], ['Senior', 'Senior']], m.age_group)}</label>
+      <label>Gender${sel('gender', [['', ''], ['F', 'Female'], ['M', 'Male'], ['Other', 'Other']], m.gender)}</label>
+      <label>Phone<input name="phone" value="${m.phone || ''}"></label>
+      <label>Food${sel('dietary', F.FIELD.dietary.options, m.dietary)}</label>
+      <label>ID type${sel('id_type', [['', ''], ...S.ID_TYPES.map((t) => [t, t])], m.id_type)}</label>
+      <label>ID number<input name="id_number" placeholder="${m.id_number ? maskId(m.id_number) : ''}" autocomplete="off"></label>
+      <label>ID photo<input type="file" name="id_file" accept="image/*,application/pdf"></label>
+    </div>`;
   res.send(page(req, g.name, html`
     <p><a href="/admin/events/${e.id}">← ${e.title}</a></p>
-    <div class="head"><h1>${g.name} ${S.badge(g.rsvp_status)}</h1>
+    <div class="head"><h1>${[g.salutation, g.name].filter(Boolean).join(' ')} ${S.badge(g.rsvp_status)}</h1>
       <div class="actions">
         ${g.phone ? html`<a class="btn" href="tel:${g.phone}">Call</a><a class="btn wa" target="_blank" href="/admin/guests/${g.id}/whatsapp">WhatsApp invite</a>` : ''}
         <a class="btn" target="_blank" href="/i/${g.token}">Open RSVP page</a>
       </div></div>
+    <p class="muted">${[g.relation, g.side, g.group_name, g.category, g.city].filter(Boolean).join(' · ')}</p>
+
     <form method="post" action="/admin/guests/${g.id}" class="form card">
-      <h3>Contact</h3>
-      <div class="row"><label>Name<input name="name" required value="${g.name}"></label><label>Phone<input name="phone" value="${g.phone || ''}"></label></div>
-      <div class="row"><label>Side${sel('side', [['', ''], ['Bride', 'Bride'], ['Groom', 'Groom']], g.side)}</label>
-        <label>Group<input name="group_name" value="${g.group_name || ''}"></label></div>
-      <div class="row"><label>Invited for (people)<input type="number" min="1" name="max_pax" value="${g.max_pax}"></label><label>Email<input name="email" value="${g.email || ''}"></label></div>
-      <h3>Ownership &amp; follow-up</h3>
-      <div class="row"><label>Owner${sel('assigned_to', [['', '— Unassigned —'], ...team.map((u) => [u.id, u.name])], g.assigned_to)}</label>
-        <label>Follow up on<input type="datetime-local" name="follow_up_at" value="${S.followUpToInput(g.follow_up_at)}"></label></div>
-      <h3>RSVP</h3>
-      <div class="row"><label>Status${sel('rsvp_status', Object.entries(S.STATUS_LABEL), g.rsvp_status)}</label>
-        <label>People attending<input type="number" min="0" name="pax" value="${g.pax ?? ''}"></label></div>
-      <div class="row"><label>Arrival date<input type="date" name="arrival_date" value="${g.arrival_date || ''}"></label>
-        <label>Arrival mode${sel('arrival_mode', [['', ''], ['Flight', 'Flight'], ['Train', 'Train'], ['Car', 'Car'], ['Bus', 'Bus'], ['Local', 'Local']], g.arrival_mode)}</label></div>
-      <label>Arrival details<input name="arrival_details" value="${g.arrival_details || ''}" placeholder="6E 2134, lands 14:30"></label>
-      <div class="row"><label>Departure date<input type="date" name="departure_date" value="${g.departure_date || ''}"></label>
-        <label>Needs stay${sel('needs_stay', [['', ''], ['1', 'Yes'], ['0', 'No']], g.needs_stay)}</label></div>
-      <label>Dietary<input name="dietary" value="${g.dietary || ''}"></label>
-      <label>Guest's note<textarea name="guest_notes" rows="2">${g.guest_notes || ''}</textarea></label>
-      <label>Internal notes (not visible to client)<textarea name="internal_notes" rows="2">${g.internal_notes || ''}</textarea></label>
-      <button class="primary">Save guest</button>
+      ${fns.length ? html`<fieldset><legend>RSVP by function</legend>
+        <div class="table-wrap flat"><table class="mini"><tr><th>Function</th><th>Invited</th><th>Answer</th><th>People</th></tr>
+        ${fns.map((f) => { const a = answers.get(f.id); return html`<tr>
+          <td><strong>${f.name}</strong><br><small class="muted">${[fmtDate(f.date), f.time].filter(Boolean).join(' · ')}</small></td>
+          <td><input type="checkbox" name="fn_inv_${f.id}" value="1" ${a ? 'checked' : ''}></td>
+          <td>${sel(`fn_rsvp_${f.id}`, Object.entries(W.RSVP_LABEL), a?.rsvp || 'pending')}</td>
+          <td><input type="number" name="fn_pax_${f.id}" min="0" max="${g.max_pax}" value="${a?.pax ?? ''}" size="3"></td></tr>`; })}
+        </table></div></fieldset>`
+      : html`<fieldset><legend>RSVP</legend><div class="fields">
+          <label>Status${sel('rsvp_status', Object.entries(S.STATUS_LABEL), g.rsvp_status)}</label>
+          <label>People attending<input type="number" min="0" name="pax" value="${g.pax ?? ''}"></label></div>
+          <p class="muted small">Add functions (Haldi, Sangeet…) to track RSVPs per function.</p></fieldset>`}
+      <fieldset><legend>Ownership &amp; follow-up</legend><div class="fields">
+        <label>Owner${sel('assigned_to', [['', '— Unassigned —'], ...team.map((u) => [u.id, u.name])], g.assigned_to)}</label>
+        <label>Follow up on<input type="datetime-local" name="follow_up_at" value="${S.followUpToInput(g.follow_up_at)}"></label></div></fieldset>
+      ${F.SECTIONS.map((sec) => F.formSection(sec, g, { hotels }))}
+      ${cfs.length ? html`<fieldset><legend>Custom fields</legend><div class="fields">
+        ${cfs.map((cf) => html`<label>${cf.label}${F.customInput(cf, cvals.get(cf.id))}</label>`)}</div></fieldset>` : ''}
+      <button class="primary big">Save guest</button>
     </form>
-    <div class="card"><h3>Government ID</h3>
+
+    <div class="card" id="members"><h3>Family members travelling <small class="muted">(${members.length + 1} of ${g.max_pax} incl. ${g.name})</small></h3>
+      ${members.map((m) => html`<details class="member"><summary><strong>${m.name}</strong>
+          <span class="muted">${[m.relation, m.age_group, m.dietary].filter(Boolean).join(' · ')}</span>
+          ${m.id_file ? html` · <a href="/admin/members/${m.id}/id-file" target="_blank">${m.id_type || 'ID'} ${maskId(m.id_number)}</a>` : m.id_type ? html` · <span class="muted">${m.id_type} (no photo)</span>` : html` · <span class="muted">no ID</span>`}</summary>
+        <form method="post" action="/admin/members/${m.id}" enctype="multipart/form-data" class="form">${memberRow(m)}
+          <div class="actions"><button class="primary sm" name="action" value="save">Save</button>
+          <button class="danger sm" name="action" value="delete" data-confirm-click="Remove ${m.name}?">Remove</button></div></form></details>`)}
+      <details class="member"><summary><strong>+ Add family member</strong></summary>
+        <form method="post" action="/admin/guests/${g.id}/members" enctype="multipart/form-data" class="form">${memberRow()}
+          <button class="primary sm">Add member</button></form></details>
+    </div>
+
+    <div class="card"><h3>Government ID — ${g.name}</h3>
       ${g.id_type || g.id_file ? html`<p>${g.id_type || ''} ${g.id_number ? html`· <code>${g.id_number}</code>` : ''}
         ${g.id_consent_at ? html`<br><small class="muted">Consent given ${fmtDate(g.id_consent_at)}</small>` : ''}</p>
         ${g.id_file ? html`<p><a class="btn" target="_blank" href="/admin/guests/${g.id}/id-file">View ID document</a></p>` : ''}
@@ -427,21 +505,37 @@ r.get('/guests/:id', (req, res) => {
 r.post('/guests/:id', (req, res) => {
   const { g, e } = T.loadGuest(req, res, req.params.id);
   if (!g) return;
-  const b = req.body;
-  const status = S.STATUS_LABEL[b.rsvp_status] ? b.rsvp_status : g.rsvp_status;
+  const b = req.body, who = req.user.name;
   const owner = b.assigned_to ? T.eventTeam(e).find((u) => u.id === Number(b.assigned_to)) : null;
   const followUp = S.followUpToDb(b.follow_up_at);
+  if ((owner?.id ?? null) !== g.assigned_to) S.logActivity(g.event_id, g.id, who, 'assign', owner ? `Assigned to ${owner.name}` : 'Unassigned');
+  if (followUp && followUp !== g.follow_up_at) S.logActivity(g.event_id, g.id, who, 'followup', `Follow-up set for ${fmtDate(followUp)}`);
+
+  const vals = F.parse(b, F.GUEST_FIELDS.map((f) => f.key));
+  if (!vals.name) delete vals.name;
+  if (vals.hotel_id && !db.prepare('SELECT 1 FROM hotels WHERE id = ? AND event_id = ?').get(vals.hotel_id, e.id)) vals.hotel_id = null;
+  F.update(g.id, { ...vals, assigned_to: undefined });
   db.prepare('UPDATE guests SET assigned_to = ?, follow_up_at = ? WHERE id = ?').run(owner?.id ?? null, followUp, g.id);
-  if ((owner?.id ?? null) !== g.assigned_to) S.logActivity(g.event_id, g.id, req.user.name, 'assign', owner ? `Assigned to ${owner.name}` : 'Unassigned');
-  if (followUp && followUp !== g.follow_up_at) S.logActivity(g.event_id, g.id, req.user.name, 'followup', `Follow-up set for ${fmtDate(followUp)}`);
-  if (status !== g.rsvp_status) S.logActivity(g.event_id, g.id, req.user.name, 'rsvp', `RSVP changed to ${S.STATUS_LABEL[status]}`);
-  db.prepare(`UPDATE guests SET name=?, phone=?, email=?, side=?, group_name=?, max_pax=?, rsvp_status=?, pax=?,
-    arrival_date=?, arrival_mode=?, arrival_details=?, departure_date=?, needs_stay=?, dietary=?, guest_notes=?, internal_notes=?,
-    responded_at = CASE WHEN ? != 'pending' AND responded_at IS NULL THEN datetime('now') ELSE responded_at END WHERE id=?`)
-    .run(b.name?.trim() || g.name, b.phone || null, b.email || null, b.side || null, b.group_name || null, Math.max(1, Number(b.max_pax) || 1),
-      status, b.pax === '' || b.pax == null ? null : Number(b.pax), b.arrival_date || null, b.arrival_mode || null, b.arrival_details || null,
-      b.departure_date || null, b.needs_stay === '' || b.needs_stay == null ? null : Number(b.needs_stay), b.dietary || null,
-      b.guest_notes || null, b.internal_notes || null, status, g.id);
+  F.saveCustom(g.id, F.customFields(e.id), b);
+
+  const fns = W.functionsOf(e.id);
+  if (fns.length) {
+    const before = W.guestFunctions(g.id);
+    for (const f of fns) {
+      if (!b[`fn_inv_${f.id}`]) { db.prepare('DELETE FROM guest_functions WHERE guest_id = ? AND function_id = ?').run(g.id, f.id); continue; }
+      W.inviteGuest(g.id, [f.id]);
+      const rsvp = b[`fn_rsvp_${f.id}`], pax = b[`fn_pax_${f.id}`] === '' ? null : Number(b[`fn_pax_${f.id}`]);
+      W.setFunctionAnswer(g.id, f.id, rsvp, pax == null ? null : Math.min(g.max_pax, pax));
+      if (before.get(f.id)?.rsvp !== rsvp && rsvp !== 'pending') S.logActivity(g.event_id, g.id, who, 'rsvp', `${f.name}: ${W.RSVP_LABEL[rsvp]}`);
+    }
+    W.syncOverall(g.id);
+  } else {
+    const status = S.STATUS_LABEL[b.rsvp_status] ? b.rsvp_status : g.rsvp_status;
+    if (status !== g.rsvp_status) S.logActivity(g.event_id, g.id, who, 'rsvp', `RSVP changed to ${S.STATUS_LABEL[status]}`);
+    db.prepare(`UPDATE guests SET rsvp_status = ?, pax = ?,
+      responded_at = CASE WHEN ? != 'pending' AND responded_at IS NULL THEN datetime('now') ELSE responded_at END WHERE id = ?`)
+      .run(status, b.pax === '' || b.pax == null ? null : Number(b.pax), status, g.id);
+  }
   back(res, `/admin/guests/${g.id}`, 'Saved');
 });
 
@@ -457,6 +551,7 @@ r.post('/guests/:id/delete', (req, res) => {
   const { g, e } = T.loadGuest(req, res, req.params.id);
   if (!g) return;
   S.removeUpload('ids', g.id_file);
+  for (const m of W.membersOf(g.id)) S.removeUpload('ids', m.id_file);
   db.prepare('DELETE FROM guests WHERE id = ?').run(g.id);
   back(res, `/admin/events/${g.event_id}`, `Deleted ${g.name}`);
 });
@@ -577,6 +672,7 @@ r.get('/platform', platformOnly, (req, res) => {
   const tot = orgs.reduce((t, o) => ({ weddings: t.weddings + o.weddings, guests: t.guests + o.guests, services: t.services + o.services }),
     { weddings: 0, guests: 0, services: 0 });
   const requested = pipeline.filter((e) => e.service_status === 'requested').length;
+  const staffPicker = T.orgTeam(db.platformOrgId);
   const stat = (v, l) => html`<div class="stat"><div class="stat-v">${v}</div><div class="stat-l">${l}</div></div>`;
   res.send(page(req, 'Platform', html`
     <p><a href="/admin">← Weddings</a></p><h1>Platform dashboard</h1>
@@ -592,7 +688,9 @@ r.get('/platform', platformOnly, (req, res) => {
         <td>${e.guests}</td><td class="notes">${e.service_note || ''}</td>
         <td><span class="badge svc-${e.service_status}">${T.SERVICE_LABEL[e.service_status]}</span><br><small class="muted">${fmtDate(e.service_updated_at)}</small></td>
         <td class="nowrap">${e.service_status === 'requested' ? html`
-          <form method="post" action="/admin/platform/events/${e.id}" class="inline"><button name="action" value="accept" class="primary sm">Accept</button></form>
+          <form method="post" action="/admin/platform/events/${e.id}" class="accept-form">
+            ${staffPicker.map((p) => html`<label class="check inline-check"><input type="checkbox" name="staff" value="${p.id}"> ${p.name}</label>`)}
+            <button name="action" value="accept" class="primary sm">Accept</button></form>
           <form method="post" action="/admin/platform/events/${e.id}" class="inline" data-confirm="Decline this request?"><button name="action" value="decline" class="danger sm">Decline</button></form>`
           : html`<a class="btn sm" href="/admin/events/${e.id}">Open</a>`}</td>
       </tr>`)}</table></div>` : html`<p class="muted">No requests yet.</p>`}
@@ -605,11 +703,28 @@ r.get('/platform', platformOnly, (req, res) => {
     </table></div>` : html`<p class="muted">No companies have signed up yet. Share <code>${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}/signup</code> with event companies.</p>`}`));
 });
 
-r.post('/platform/events/:id', platformOnly, (req, res) => {
+const platformAdmin = (req, res, next) => (req.user.platform && req.user.role === 'admin' ? next() : res.status(404).send('Not found'));
+
+r.post('/platform/events/:id/staff', platformAdmin, (req, res) => {
+  const e = T.getEvent(req.params.id);
+  if (!e || e.service_status !== 'active') return back(res, '/admin/platform', 'Service is not active');
+  const before = new Set(T.eventStaff(e.id).map((x) => x.id));
+  T.setEventStaff(e.id, [].concat(req.body.staff || []));
+  const after = T.eventStaff(e.id);
+  // Guests of removed staff go back to the unassigned pool.
+  db.prepare(`UPDATE guests SET assigned_to = NULL WHERE event_id = ? AND assigned_to IN (SELECT id FROM users WHERE org_id = ?)
+    AND assigned_to NOT IN (SELECT user_id FROM event_staff WHERE event_id = ?)`).run(e.id, db.platformOrgId, e.id);
+  if (after.map((x) => x.id).join() !== [...before].sort((a, b) => a - b).join())
+    S.logActivity(e.id, null, req.user.name, 'service', `Dedicated staff: ${after.map((x) => x.name).join(', ') || 'none'}`);
+  back(res, `/admin/events/${e.id}`, 'Staff updated');
+});
+
+r.post('/platform/events/:id', platformAdmin, (req, res) => {
   const e = T.getEvent(req.params.id);
   if (!e || e.service_status !== 'requested') return back(res, '/admin/platform', 'That request is no longer pending');
   const accept = req.body.action === 'accept';
   db.prepare("UPDATE events SET service_status = ?, service_updated_at = datetime('now') WHERE id = ?").run(accept ? 'active' : 'declined', e.id);
+  if (accept) T.setEventStaff(e.id, [].concat(req.body.staff || []));
   S.logActivity(e.id, null, req.user.name, 'service', accept ? 'Candid Dulhan RSVP desk accepted — service is active' : 'RSVP desk request declined');
   back(res, accept ? `/admin/events/${e.id}` : '/admin/platform', accept ? `Service active — ${e.title} is now in your partner weddings` : 'Declined');
 });

@@ -15,7 +15,7 @@ const ID_TYPES = ['Aadhaar', 'Passport', 'Driving Licence', 'Voter ID', 'PAN', '
 
 const uploadDir = (kind) => path.join(config.dataDir, 'uploads', kind);
 
-function uploader(kind, { accept }) {
+function uploader(kind, { accept, files = 1 }) {
   return multer({
     storage: multer.diskStorage({
       destination: uploadDir(kind),
@@ -24,14 +24,15 @@ function uploader(kind, { accept }) {
         cb(null, `${Date.now()}-${token(9)}${ext}`);
       },
     }),
-    limits: { fileSize: config.maxUploadMb * 1024 * 1024, files: 1 },
+    limits: { fileSize: config.maxUploadMb * 1024 * 1024, files },
     fileFilter: (_req, file, cb) => cb(null, accept(file)),
   });
 }
 
-const idUpload = uploader('ids', {
-  accept: (f) => /^image\//.test(f.mimetype) || f.mimetype === 'application/pdf',
-});
+const isIdDoc = (f) => /^image\//.test(f.mimetype) || f.mimetype === 'application/pdf';
+const idUpload = uploader('ids', { accept: isIdDoc });
+// RSVP form: one ID per family member.
+const idUploadMany = uploader('ids', { accept: isIdDoc, files: 20 });
 const AUDIO_EXT = /\.(mp3|m4a|aac|amr|wav|ogg|opus|3gp|3gpp|mp4|awb|flac|webm)$/i;
 const recordingUpload = uploader('recordings', {
   accept: (f) => /^audio\//.test(f.mimetype) || AUDIO_EXT.test(f.originalname || ''),
@@ -249,19 +250,41 @@ const followUpToDb = (local) => {
 const followUpToInput = (utc) => (utc ? new Date(Date.parse(utc.replace(' ', 'T') + 'Z') + IST_MS).toISOString().slice(0, 16) : '');
 const isOverdue = (utc) => !!utc && Date.parse(utc.replace(' ', 'T') + 'Z') <= Date.now();
 
-function guestsCsv(eventId, { withIdNumbers }) {
+function guestsCsv(eventId, { withIdNumbers, forClient }) {
+  const F = require('./fields'), W = require('./wedding');
   const rows = db.prepare('SELECT * FROM guests WHERE event_id = ? ORDER BY side, group_name, name').all(eventId);
-  const head = ['Name', 'Phone', 'Email', 'Side', 'Group', 'Invited for', 'RSVP', 'People attending', 'Arrival date',
-    'Arrival mode', 'Arrival details', 'Departure date', 'Needs stay', 'Dietary', 'Guest note', 'ID type', 'ID number',
-    'ID uploaded', 'Responded at'];
-  return toCsv([head, ...rows.map((g) => [g.name, g.phone, g.email, g.side, g.group_name, g.max_pax,
-    STATUS_LABEL[g.rsvp_status], g.pax, g.arrival_date, g.arrival_mode, g.arrival_details, g.departure_date,
-    g.needs_stay == null ? '' : g.needs_stay ? 'Yes' : 'No', g.dietary, g.guest_notes, g.id_type,
-    withIdNumbers ? g.id_number : maskId(g.id_number), g.id_file ? 'Yes' : 'No', g.responded_at])]);
+  const hotels = new Map(db.prepare('SELECT id, name FROM hotels WHERE event_id = ?').all(eventId).map((h) => [h.id, h.name]));
+  const fns = W.functionsOf(eventId);
+  const answers = W.guestFunctionMap(eventId);
+  const cfs = F.customFields(eventId);
+  const cvals = new Map();
+  for (const r of db.prepare('SELECT gc.* FROM guest_custom gc JOIN guests g ON g.id = gc.guest_id WHERE g.event_id = ?').all(eventId)) {
+    if (!cvals.has(r.guest_id)) cvals.set(r.guest_id, new Map());
+    cvals.get(r.guest_id).set(r.field_id, r.value);
+  }
+  const members = new Map();
+  for (const m of db.prepare('SELECT m.* FROM guest_members m JOIN guests g ON g.id = m.guest_id WHERE g.event_id = ? ORDER BY m.sort, m.id').all(eventId)) {
+    if (!members.has(m.guest_id)) members.set(m.guest_id, []);
+    members.get(m.guest_id).push(m);
+  }
+  const idNo = (n) => (withIdNumbers ? n : maskId(n));
+  const fields = F.GUEST_FIELDS.filter((f) => !(forClient && f.key === 'internal_notes'));
+  const head = [...fields.map((f) => f.label), 'RSVP', 'People attending',
+    ...fns.map((f) => `${f.name} RSVP`), ...fns.map((f) => `${f.name} people`),
+    'Family members', 'ID type', 'ID number', 'ID uploaded', 'Responded at', ...cfs.map((cf) => cf.label)];
+  return toCsv([head, ...rows.map((g) => [
+    ...fields.map((f) => F.display(f, g, hotels)), STATUS_LABEL[g.rsvp_status], g.pax,
+    ...fns.map((f) => { const a = answers.get(g.id)?.get(f.id); return a ? STATUS_LABEL[a.rsvp] : 'Not invited'; }),
+    ...fns.map((f) => { const a = answers.get(g.id)?.get(f.id); return a?.rsvp === 'yes' ? a.pax ?? 1 : ''; }),
+    (members.get(g.id) || []).map((m) => [m.name, m.relation && `(${m.relation})`, m.age_group, m.id_type && `${m.id_type} ${idNo(m.id_number) || ''}`]
+      .filter(Boolean).join(' ')).join('; '),
+    g.id_type, idNo(g.id_number), g.id_file ? 'Yes' : 'No', g.responded_at,
+    ...cfs.map((cf) => cvals.get(g.id)?.get(cf.id) ?? ''),
+  ])]);
 }
 
 module.exports = {
-  STATUS_LABEL, OUTCOMES, ID_TYPES, DEFAULT_INVITE, idUpload, recordingUpload, sendUpload, removeUpload,
+  STATUS_LABEL, OUTCOMES, ID_TYPES, DEFAULT_INVITE, idUpload, idUploadMany, recordingUpload, sendUpload, removeUpload,
   inviteUrl, clientUrl, inviteText, waUrl, stats, statCards, badge, listGuests, filterBar, callsTable, eventCalls, guestsCsv,
   teamMembers, logActivity, timeline, guestTimeline, teamStats, teamTable, followUpToDb, followUpToInput, isOverdue,
 };

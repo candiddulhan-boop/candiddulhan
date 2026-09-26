@@ -19,8 +19,13 @@ document.addEventListener('submit', (ev) => {
 const rsvp = document.querySelector('[data-rsvp]');
 if (rsvp) {
   const sync = () => {
-    const v = rsvp.querySelector('input[name="rsvp_status"]:checked')?.value;
+    // Overall state across all functions: attending anywhere > maybe > declined.
+    const vals = [...rsvp.querySelectorAll('input[data-answer]:checked')].map((i) => i.value);
+    const v = vals.includes('yes') ? 'yes' : vals.includes('maybe') ? 'maybe' : vals.length ? 'no' : '';
     rsvp.querySelectorAll('[data-when]').forEach((el) => { el.hidden = !v || !el.dataset.when.split(' ').includes(v); });
+    rsvp.querySelectorAll('[data-show-if]').forEach((el) => {
+      el.hidden = rsvp.querySelector(`input[name="${el.dataset.showIf}"]:checked`)?.value !== 'yes';
+    });
   };
   rsvp.addEventListener('change', sync);
   sync();

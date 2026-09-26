@@ -166,3 +166,33 @@ audio { height: 34px; max-width: 240px; }
 .badge.svc-declined { background: #fbe7e5; color: var(--no); }
 .signup { max-width: 520px; margin: 6vh auto; }
 .signup h1 { font-family: 'Cormorant Garamond', serif; color: var(--brand); font-size: 2rem; }
+
+/* Full guest model */
+.subnav { margin-top: 4px; flex-wrap: wrap; }
+.pills-nav { border: none; margin: 0; }
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 14px; }
+.fields .wide { grid-column: 1 / -1; }
+.fn-block { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.fn-head { display: flex; flex-direction: column; margin-bottom: 8px; }
+.inline-label { display: flex !important; align-items: center; gap: 10px; margin: 0 !important; }
+.inline-label input { width: 90px !important; margin: 0 !important; }
+.member-slot { border-bottom: 1px dashed var(--line); padding-bottom: 6px; margin-bottom: 10px; }
+details.member { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.chips-fn { display: inline-flex; gap: 3px; margin-top: 4px; }
+.fn { font-size: .65rem; font-weight: 600; padding: 1px 4px; border-radius: 4px; background: #efebe8; color: var(--muted); }
+.fn.yes { background: #e3f4ea; color: var(--yes); } .fn.no { background: #fbe7e5; color: var(--no); }
+.fn.maybe { background: #fbf1d6; color: #8a6a0a; } .fn.none { opacity: .35; text-decoration: line-through; }
+.table-wrap.flat { border: none; }
+tr.row-warn td { background: #fff7f5; }
+.inline-form input[type=date], .inline-form input:not([type]) { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.staff-form { margin-top: 8px; }
+.accept-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.summary p { margin: 6px 0; }
+@media (max-width: 600px) { .fields { grid-template-columns: 1fr; } }
+.pills.compact { grid-template-columns: repeat(3, 1fr) !important; gap: 6px; margin-bottom: 8px; }
+.pills.compact .pill span { padding: 9px 4px; font-size: .85rem; }
+@media (max-width: 600px) {
+  .fields { grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .fields label { font-size: .85rem; }
+  .fn-block { padding: 10px; }
+}

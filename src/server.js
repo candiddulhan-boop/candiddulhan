@@ -84,6 +84,7 @@ app.post('/login', (req, res) => {
 app.post('/logout', (_req, res) => { auth.logout(res); res.redirect('/login'); });
 
 app.use('/api', require('./routes/api'));
+app.use('/admin', require('./routes/ops'));
 app.use('/admin', require('./routes/admin'));
 app.use('/caller', require('./routes/caller'));
 app.use('/i', require('./routes/rsvp'));

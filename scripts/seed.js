@@ -78,6 +78,19 @@ try {
     ['Divya Menon', 'Bride', 'Friends', 1, 'pending', null, null, null, null, null, null, 0],
   ];
 
+  // Functions, hotels, dedicated staff and a custom field for the served wedding.
+  const fnIds = [['Haldi', '2026-12-10', '10:00', 'Poolside Lawn', 'Yellow'], ['Mehndi', '2026-12-10', '16:00', 'Courtyard', 'Green & pink'],
+    ['Sangeet', '2026-12-11', '19:30', 'Grand Ballroom', 'Indo-western'], ['Wedding', '2026-12-12', '18:00', 'Lake Terrace', 'Traditional'],
+    ['Reception', '2026-12-13', '20:00', 'Grand Ballroom', 'Formal']].map(([n, d, t, v, dc], i) =>
+    Number(db.prepare('INSERT INTO functions (event_id, name, date, time, venue, dress_code, sort) VALUES (?,?,?,?,?,?,?)').run(eventId, n, d, t, v, dc, i + 1).lastInsertRowid));
+  const hotelIds = [['The Leela Palace', 60], ['Taj Fateh Prakash', 25]].map(([n, rooms]) =>
+    Number(db.prepare('INSERT INTO hotels (event_id, name, rooms_blocked) VALUES (?,?,?)').run(eventId, n, rooms).lastInsertRowid));
+  db.prepare("INSERT INTO custom_fields (event_id, label, type, options, on_rsvp) VALUES (?, 'Performing at Sangeet?', 'yesno', NULL, 1)").run(eventId);
+  db.prepare("INSERT INTO custom_fields (event_id, label, type, options, on_rsvp) VALUES (?, 'Kurta size', 'select', 'S, M, L, XL, XXL', 0)").run(eventId);
+  for (const u of team.slice(0, 2)) db.prepare('INSERT OR IGNORE INTO event_staff (event_id, user_id) VALUES (?,?)').run(eventId, u.id);
+  const relations = ['Mama ji', 'Bua', 'College friend', 'Chacha ji', 'Office colleague', 'Neighbour', 'Mausi'];
+  const times = ['09:40', '11:15', '13:30', '15:05', '17:45', '20:10'];
+
   guests.forEach(([name, side, group, maxPax, status, pax, arrival, mode, stay, dietary, idType, owner, followUp], i) => {
     const phone = `98${String(10000000 + i * 1234567).slice(0, 8)}`;
     const assignee = owner == null ? null : team[owner];
@@ -89,6 +102,31 @@ try {
       pax, arrival, mode, stay, dietary, responded, idType, idType ? String(400000000000 + i * 7919) : null, idType ? responded : null,
       assignee?.id ?? null, followUp == null ? null : ahead(followUp));
     const gid = Number(info.lastInsertRowid);
+    // Rich profile fields
+    db.prepare(`UPDATE guests SET salutation = ?, relation = ?, city = ?, category = ?, language = 'Hindi',
+      arrival_time = ?, arrival_details = ?, arrival_point = ?, pickup_required = ?, pickup_status = ?, pickup_vehicle = ?,
+      departure_date = CASE WHEN ? THEN '2026-12-14' END, departure_time = CASE WHEN ? THEN '12:30' END, drop_required = ?,
+      hotel_id = ?, room_type = ?, room_no = ?, kids = ? WHERE id = ?`).run(
+      /^(Meena|Kavita|Pooja|Ritu|Nisha|Lata|Sneha|Geeta|Farah|Anjali|Divya)/.test(name) ? 'Mrs.' : 'Mr.', relations[i % relations.length], ['Delhi', 'Mumbai', 'Jaipur', 'Kolkata', 'Indore'][i % 5],
+      i % 7 === 0 ? 'VIP' : group === 'Family' ? 'Family' : group === 'Office' ? 'Office' : 'Friends',
+      arrival ? times[i % times.length] : null, mode === 'Flight' ? `6E ${2100 + i}` : mode === 'Train' ? `12${900 + i}` : null,
+      mode === 'Flight' ? 'Udaipur Airport' : mode === 'Train' ? 'Udaipur City Station' : null,
+      arrival && mode !== 'Local' && mode !== 'Car' ? 1 : arrival ? 0 : null,
+      arrival && i % 4 === 0 ? 'Assigned' : arrival ? 'Pending' : null, arrival && i % 4 === 0 ? `Innova RJ27 ${1000 + i} · Ramesh 98290 1${i}` : null,
+      arrival ? 1 : 0, arrival ? 1 : 0, arrival ? 1 : null,
+      stay && i % 2 === 0 ? hotelIds[i % 2 === 0 && i % 4 === 0 ? 0 : 1] : null, stay ? (maxPax > 2 ? 'Triple' : 'Double') : null,
+      stay && i % 2 === 0 ? String(300 + i) : null, maxPax > 3 ? 1 : 0, gid);
+    // Per-function answers follow the overall status
+    fnIds.forEach((fid, k) => {
+      const a = status === 'yes' ? (k === 0 && i % 3 === 0 ? 'no' : 'yes') : status === 'no' ? 'no' : status === 'maybe' ? (k < 2 ? 'maybe' : 'yes') : 'pending';
+      db.prepare('INSERT INTO guest_functions (guest_id, function_id, rsvp, pax) VALUES (?,?,?,?)').run(gid, fid, a, a === 'yes' ? pax || maxPax : a === 'no' ? 0 : null);
+    });
+    if (status === 'yes' && maxPax > 1) {
+      ['Spouse', 'Son', 'Daughter', 'Mother'].slice(0, Math.min(maxPax - 1, 3)).forEach((rel, k) =>
+        db.prepare('INSERT INTO guest_members (guest_id, name, relation, age_group, id_type, id_number, sort) VALUES (?,?,?,?,?,?,?)')
+          .run(gid, `${name.split(' ')[1] || ''} ${['Sunita', 'Aryan', 'Kiara', 'Kamla'][k]}`.trim(), rel, rel === 'Mother' ? 'Senior' : k ? 'Child' : 'Adult',
+            k === 0 ? 'Aadhaar' : null, k === 0 ? String(500000000000 + i * 131) : null, k));
+    }
     log.run(eventId, gid, 'Meera', 'invite', 'WhatsApp invite sent', invitedAt);
     if (assignee) log.run(eventId, gid, 'Priya', 'assign', `Assigned to ${assignee.name} (auto-split)`, ago(80));
     if (status !== 'pending' && i % 3 !== 2) {

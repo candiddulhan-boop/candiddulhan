@@ -20,6 +20,24 @@ A white-label RSVP service for Candid Dulhan wedding clients. It lets you:
 - The Platform dashboard also lists every partner company, their weddings, guest counts and last activity. It is your sales pipeline.
 - Logging in with `ADMIN_PASSWORD` always signs you into the Candid Dulhan workspace.
 
+### Guest management for wedding planners
+
+- **Functions:** Haldi, Mehndi, Sangeet, Wedding, Reception (or any others), each with date, time, venue and dress code. Every guest is invited to some or all functions and **answers separately for each**. Headcounts per function update live on the planner and client dashboards.
+- **Complete guest profile:** 44 built-in fields in 7 sections:
+  - Contact: salutation, mobile, alternate phone, email, city, language
+  - Relation: side, relation to couple, group, category (e.g. VIP), tags, party size, children
+  - Arrival: date, time, mode, flight/train no., from, arriving at, pickup needed/status/vehicle
+  - Departure: the same details, plus the drop
+  - Stay: needs stay, hotel, room type, room no., check-in/out, sharing with
+  - Care: food, allergies, special needs, welcome hamper
+  - Notes: the guest's message and internal notes
+- **Family members:** everyone travelling in a party, each with name, relation, age group, food and **their own ID**.
+- **Custom fields per wedding:** text, number, date, dropdown or yes/no. Tick "Ask guests" to add the question to the RSVP page.
+- **Rooming:** hotels with blocked room counts, and room assignment for each party. The rooming list downloads for the hotel.
+- **Transport:** arrivals and departures by date and time, with a pickup or drop status and vehicle/driver for each party. Download a pickup sheet for the transport team.
+- **Import:** a CSV with any of these fields (matched by name) and a `functions` column. **Export:** every field, each function's answer, family members and custom fields.
+- **Dedicated staff:** when you accept a planner's RSVP desk request, you choose which 1–2 people from your team work on it. Only those people (and your admins) can see that wedding. The planner and the couple see their names ("Your guest managers: Neha, Ravi").
+
 ### Screens
 
 | URL | Who | What |

@@ -132,6 +132,85 @@ addColumn('events', 'service_note', 'TEXT');
 addColumn('events', 'service_updated_at', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS events_org ON events(org_id, service_status)');
 
+// ---- Full guest-management model ----
+db.exec(`
+-- Functions of a wedding (Haldi, Mehndi, Sangeet, Wedding, Reception …)
+CREATE TABLE IF NOT EXISTS functions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  date TEXT, time TEXT, venue TEXT, dress_code TEXT, notes TEXT,
+  sort INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS functions_event ON functions(event_id, sort);
+
+-- Which functions each guest party is invited to, and their answer per function
+CREATE TABLE IF NOT EXISTS guest_functions (
+  guest_id INTEGER NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+  function_id INTEGER NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
+  rsvp TEXT NOT NULL DEFAULT 'pending',   -- pending | yes | no | maybe
+  pax INTEGER,
+  PRIMARY KEY (guest_id, function_id)
+);
+CREATE INDEX IF NOT EXISTS guest_functions_fn ON guest_functions(function_id);
+
+-- Everyone travelling in a guest's party (the guest row is the head of the family)
+CREATE TABLE IF NOT EXISTS guest_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guest_id INTEGER NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  relation TEXT,
+  age_group TEXT,                 -- Adult | Child | Senior
+  gender TEXT,
+  phone TEXT,
+  dietary TEXT,
+  id_type TEXT, id_number TEXT, id_file TEXT,
+  sort INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS guest_members_guest ON guest_members(guest_id);
+
+CREATE TABLE IF NOT EXISTS hotels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, address TEXT, contact TEXT, rooms_blocked INTEGER, notes TEXT
+);
+
+-- Planner-defined extra fields per wedding (like CRM custom fields)
+CREATE TABLE IF NOT EXISTS custom_fields (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'text',     -- text | number | date | select | yesno
+  options TEXT,                          -- comma separated, for select
+  on_rsvp INTEGER NOT NULL DEFAULT 0,    -- ask guests on the RSVP page
+  sort INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS guest_custom (
+  guest_id INTEGER NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+  field_id INTEGER NOT NULL REFERENCES custom_fields(id) ON DELETE CASCADE,
+  value TEXT,
+  PRIMARY KEY (guest_id, field_id)
+);
+
+-- Candid Dulhan staff dedicated to a partner wedding (the "1–2 people" working on the planner's behalf)
+CREATE TABLE IF NOT EXISTS event_staff (
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (event_id, user_id)
+);
+`);
+for (const [col, type] of [
+  ['salutation', 'TEXT'], ['relation', 'TEXT'], ['category', 'TEXT'], ['city', 'TEXT'], ['language', 'TEXT'],
+  ['alt_phone', 'TEXT'], ['kids', 'INTEGER'], ['tags', 'TEXT'],
+  ['arrival_time', 'TEXT'], ['arrival_from', 'TEXT'], ['arrival_point', 'TEXT'],
+  ['pickup_required', 'INTEGER'], ['pickup_status', 'TEXT'], ['pickup_vehicle', 'TEXT'],
+  ['departure_time', 'TEXT'], ['departure_mode', 'TEXT'], ['departure_number', 'TEXT'], ['departure_point', 'TEXT'],
+  ['drop_required', 'INTEGER'], ['drop_status', 'TEXT'], ['drop_vehicle', 'TEXT'],
+  ['hotel_id', 'INTEGER REFERENCES hotels(id) ON DELETE SET NULL'], ['room_type', 'TEXT'], ['room_no', 'TEXT'],
+  ['check_in', 'TEXT'], ['check_out', 'TEXT'], ['sharing_with', 'TEXT'],
+  ['allergies', 'TEXT'], ['special_needs', 'TEXT'], ['hamper_status', 'TEXT'],
+]) addColumn('guests', col, type);
+
 // Everything created before multi-company support belongs to Candid Dulhan.
 db.platformOrgId = db.prepare('SELECT id FROM orgs WHERE is_platform = 1').get()?.id
   ?? Number(db.prepare("INSERT INTO orgs (name, is_platform) VALUES ('Candid Dulhan', 1)").run().lastInsertRowid);
